@@ -1,0 +1,14 @@
+Codex Skin Manager
+Copyright (c) 2026 Codex Skin Manager contributors
+
+The theme-import extension integrates with Codex Dream Skin Studio and contains
+code developed against that project's MIT-licensed macOS engine interfaces.
+
+Codex Dream Skin Studio
+Copyright (c) 2026 Codex Dream Skin Studio contributors
+https://github.com/Fei-Away/Codex-Dream-Skin
+
+The upstream MIT license is reproduced in THIRD_PARTY_LICENSES/Codex-Dream-Skin-MIT.txt.
+
+No character artwork, comic imagery, user theme, or Codex application asset is
+included in this repository.

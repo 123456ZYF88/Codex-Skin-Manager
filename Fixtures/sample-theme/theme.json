@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "id": "manager-sample-theme",
+  "name": "Manager Sample Theme",
+  "image": "background.png",
+  "appearance": "dark"
+}
