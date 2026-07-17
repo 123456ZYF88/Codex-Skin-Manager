@@ -16,7 +16,7 @@ private enum ManagerSection: String, CaseIterable, Identifiable {
 
 package struct ContentView: View {
     @ObservedObject package var model: AppModel
-    @State private var selectedSection: ManagerSection? = .library
+    @State private var selectedSection: ManagerSection = .library
     @State private var showingImporter = false
     @State private var confirmingRestore = false
     @State private var localError: String?
@@ -69,7 +69,7 @@ package struct ContentView: View {
         VStack(spacing: 0) {
             List(ManagerSection.allCases, selection: $selectedSection) { section in
                 Label(section.title, systemImage: section.symbol)
-                    .tag(Optional(section))
+                    .tag(section)
                     .font(.system(size: 14, weight: .medium))
             }
             .scrollContentBackground(.hidden)
