@@ -3,6 +3,7 @@ import Foundation
 
 enum UICompileTests {
     static func run() async throws {
+        try appBundleDeclaresIcon()
         try sidebarUsesConcreteSelectionTags()
 
         await MainActor.run {
@@ -31,6 +32,46 @@ enum UICompileTests {
             _ = MenuBarContentView(model: model)
         }
         print("PASS: UICompileTests")
+    }
+
+    private static func appBundleDeclaresIcon() throws {
+        let testFile = URL(fileURLWithPath: #filePath)
+        let projectRoot = testFile
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let infoURL = projectRoot.appendingPathComponent("Resources/Info.plist")
+        let plist = try PropertyListSerialization.propertyList(
+            from: Data(contentsOf: infoURL),
+            options: [],
+            format: nil
+        ) as? [String: Any]
+
+        try expect(
+            plist?["CFBundleIconFile"] as? String == "AppIcon",
+            "Info.plist must declare AppIcon"
+        )
+        try expect(
+            FileManager.default.fileExists(
+                atPath: projectRoot.appendingPathComponent("Resources/AppIcon-1024.png").path
+            ),
+            "The 1024px icon source must be committed"
+        )
+        try expect(
+            FileManager.default.fileExists(
+                atPath: projectRoot.appendingPathComponent("Resources/AppIcon.icns").path
+            ),
+            "The generated ICNS resource must be committed"
+        )
+
+        let buildScript = try String(
+            contentsOf: projectRoot.appendingPathComponent("Scripts/build-app.sh"),
+            encoding: .utf8
+        )
+        try expect(
+            buildScript.contains("Resources/AppIcon.icns"),
+            "The app bundler must copy AppIcon.icns"
+        )
     }
 
     private static func sidebarUsesConcreteSelectionTags() throws {
