@@ -8,9 +8,12 @@ enum UICompileTests {
         try sidebarUsesConcreteSelectionTags()
         try mainWindowUsesDedicatedWorkspaceViews()
         try themeCardsUseKeyboardFocusableSelectionButtons()
+        try recentToolbarDoesNotExposeIgnoredFilter()
         try importAndExportUseSafeNativeWorkflows()
+        try duplicateConfirmationShowsBothIdentities()
         try appCommandsUseTypedRequestsAndExpectedShortcuts()
         try menuBarUsesSharedStateAndLifecycleActions()
+        try retryAvailabilityGetterIsPure()
         try accessibilityAndColdArmorVisualsStayRestrained()
 
         await MainActor.run {
@@ -182,6 +185,30 @@ enum UICompileTests {
         try expect(!contentSource.contains("allowedFileTypes"), "save panel must not use the deprecated file-type API")
     }
 
+    private static func recentToolbarDoesNotExposeIgnoredFilter() throws {
+        let source = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ThemeToolbar.swift"),
+            encoding: .utf8
+        )
+        try expect(
+            source.contains("if model.selectedSection != .recent") && source.contains("Picker(\"筛选\""),
+            "Recent must hide the filter control whose value is intentionally ignored"
+        )
+    }
+
+    private static func duplicateConfirmationShowsBothIdentities() throws {
+        for file in ["ContentView.swift", "MenuBarContentView.swift"] {
+            let source = try String(
+                contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/\(file)"),
+                encoding: .utf8
+            )
+            try expect(
+                source.contains("model.pendingReplacementConfirmationText"),
+                "\(file) must render the shared incoming/existing duplicate identity text"
+            )
+        }
+    }
+
     private static func appCommandsUseTypedRequestsAndExpectedShortcuts() throws {
         let appSource = try String(
             contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManager/CodexSkinManager.swift"),
@@ -321,6 +348,17 @@ enum UICompileTests {
         try expect(cardSource.contains("VisualStyle.panelQuiet"), "Ordinary theme cards must use the quiet panel treatment")
     }
 
+    private static func retryAvailabilityGetterIsPure() throws {
+        let source = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/AppModel.swift"),
+            encoding: .utf8
+        )
+        try expect(
+            source.contains("guard !operation.isBusy, let retryIntent else { return false }\n        return retryTargetExists(for: retryIntent)"),
+            "retryAvailable must be a pure projection with no state mutation"
+        )
+    }
+
     private static func themeExtensionInstallationIsExplicitAndAtomic() throws {
         let projectRoot = projectRoot()
         let restartScript = try String(
@@ -356,8 +394,9 @@ enum UICompileTests {
         )
         try expect(
             buildScript.contains("for extension in import-theme-pack-macos.sh restart-dream-skin-macos.sh; do")
-                && buildScript.contains("/bin/cp \"$PROJECT_ROOT/EngineExtension/$extension\""),
-            "build must explicitly copy only the trusted extension filenames"
+                && buildScript.contains("/bin/cp \"$PROJECT_ROOT/EngineExtension/$extension\"")
+                && buildScript.contains("/bin/chmod 700 \"$TEMP_APP/Contents/Resources/EngineExtension/$extension\""),
+            "build must explicitly copy and harden only the trusted bundled extension filenames"
         )
 
         let engineInstall = installScript.components(separatedBy: "ENGINE_ROOT=").last ?? ""
@@ -370,12 +409,16 @@ enum UICompileTests {
             "install must use a 0700 temporary file and atomic per-extension replacement"
         )
         try expect(
-            !buildScript.contains("EngineExtension/*.sh")
-                && !engineInstall.contains("*")
-                && !engineInstall.contains("/bin/rm")
-                && !engineInstall.contains("rm -rf"),
-            "extension installation must not use globs or delete unrelated engine scripts"
+            engineInstall.contains("\"$ENGINE_SCRIPTS/.import-theme-pack-macos.sh.$$\"")
+                && engineInstall.contains("\"$ENGINE_SCRIPTS/.restart-dream-skin-macos.sh.$$\"")
+                && engineInstall.contains("/bin/rm -f \"$EXTENSION_TEMP\""),
+            "failed extension installation must clean only an exact trusted temporary path"
         )
+        try expect(
+            installScript.contains("theme importing, switching, pausing, restoring, and restarting are unavailable"),
+            "missing-engine warning must cover import and every unavailable lifecycle action"
+        )
+        try expect(!buildScript.contains("EngineExtension/*.sh"), "bundling must not discover extension scripts with a glob")
     }
 
     private static func projectRoot() -> URL {

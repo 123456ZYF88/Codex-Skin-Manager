@@ -61,7 +61,7 @@ package struct MenuBarContentView: View {
                     .foregroundStyle(.secondary)
                 ForEach(model.menuBarRecentThemes) { theme in
                     Button {
-                        Task { await model.apply(theme) }
+                        Task { await model.applyMenuBarRecentTheme(theme) }
                     } label: {
                         HStack {
                             Image(systemName: theme.isActive ? "checkmark.seal.fill" : "shield.lefthalf.filled")
@@ -134,7 +134,7 @@ package struct MenuBarContentView: View {
             Button("替换", role: .destructive) { Task { await model.replacePendingImport() } }
             Button("取消", role: .cancel) { model.cancelPendingImport() }
         } message: {
-            Text("替换后仍需手动应用该主题。")
+            Text(model.pendingReplacementConfirmationText ?? "替换后仍需手动应用该主题。")
         }
         .confirmationDialog("恢复 Codex 原版界面？", isPresented: $confirmingRestore, titleVisibility: .visible) {
             Button("恢复并重启 Codex", role: .destructive) { Task { await model.restoreOriginal() } }

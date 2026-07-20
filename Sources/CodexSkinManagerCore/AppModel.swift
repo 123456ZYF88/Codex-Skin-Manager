@@ -12,6 +12,7 @@ package enum ManagerCommand: Equatable, Sendable {
 
 package enum ManagerOperation: Equatable, Sendable {
     case idle
+    case preflighting
     case validating
     case switching
     case importing
@@ -24,7 +25,7 @@ package enum ManagerOperation: Equatable, Sendable {
 
     package var isBusy: Bool {
         switch self {
-        case .validating, .switching, .importing, .exporting, .restoring, .pausing, .restarting: true
+        case .preflighting, .validating, .switching, .importing, .exporting, .restoring, .pausing, .restarting: true
         case .idle, .succeeded, .failed: false
         }
     }
@@ -32,8 +33,13 @@ package enum ManagerOperation: Equatable, Sendable {
 
 @MainActor
 package final class AppModel: ObservableObject {
+    private enum ApplyScope: Equatable, Sendable {
+        case mainWindow
+        case menuBar
+    }
+
     private enum RetryIntent: Equatable, Sendable {
-        case apply(String)
+        case apply(String, ApplyScope)
         case pause
         case restart
         case restore
@@ -44,15 +50,23 @@ package final class AppModel: ObservableObject {
     @Published package private(set) var status: EngineStatus?
     @Published package private(set) var operation: ManagerOperation = .idle
     @Published package private(set) var recentThemeIDs: [String]
-    @Published package private(set) var pendingReplacementURL: URL?
+    @Published package private(set) var pendingReplacement: PendingThemeReplacement?
     @Published package private(set) var pendingRestartThemeID: String?
     @Published package private(set) var lastExportURL: URL?
     @Published package private(set) var commandRequest: (command: ManagerCommand, nonce: UUID)?
-    @Published package var selectedSection: ManagerSection = .dashboard
+    @Published package var selectedSection: ManagerSection = .dashboard {
+        didSet { reconcileVisibleSelection() }
+    }
     @Published package var selectedThemeID: String?
-    @Published package var searchText = ""
-    @Published package var themeFilter: ThemeFilter = .all
-    @Published package var themeSort: ThemeSort = .recent
+    @Published package var searchText = "" {
+        didSet { reconcileVisibleSelection() }
+    }
+    @Published package var themeFilter: ThemeFilter = .all {
+        didSet { reconcileVisibleSelection() }
+    }
+    @Published package var themeSort: ThemeSort = .recent {
+        didSet { reconcileVisibleSelection() }
+    }
 
     private let catalog: any ThemeCatalogReading
     private let engine: any EngineControlling
@@ -61,6 +75,7 @@ package final class AppModel: ObservableObject {
     private let recentThemeKey = "recentThemeLibraryIDs"
     private let deferredImportRoot: URL
     private var retryIntent: RetryIntent?
+    private var pendingRestartApplyScope: ApplyScope?
     private var importGeneration = 0
     private var consumedCommandNonce: UUID?
 
@@ -76,7 +91,12 @@ package final class AppModel: ObservableObject {
         self.exporter = exporter
         self.defaults = defaults
         self.deferredImportRoot = deferredImportRoot
-        recentThemeIDs = Array((defaults.stringArray(forKey: recentThemeKey) ?? []).prefix(8))
+        let storedRecentIDs = defaults.stringArray(forKey: recentThemeKey) ?? []
+        let normalizedRecentIDs = Array(Self.deduplicatedRecentIDs(storedRecentIDs).prefix(8))
+        recentThemeIDs = normalizedRecentIDs
+        if storedRecentIDs != normalizedRecentIDs {
+            defaults.set(normalizedRecentIDs, forKey: recentThemeKey)
+        }
     }
 
     package static func live() -> AppModel {
@@ -99,6 +119,13 @@ package final class AppModel: ObservableObject {
         recentThemeIDs.compactMap { id in themes.first(where: { $0.libraryID == id }) }
     }
 
+    package var pendingReplacementURL: URL? { pendingReplacement?.packageURL }
+
+    package var pendingReplacementConfirmationText: String? {
+        guard let pendingReplacement else { return nil }
+        return "即将用“\(pendingReplacement.incomingName)”（ID: \(pendingReplacement.incomingID)）替换已安装的“\(pendingReplacement.existingName)”（ID: \(pendingReplacement.existingID)）。替换后不会自动应用。"
+    }
+
     package var menuBarRecentThemes: [ThemeRecord] {
         Array(recentThemes.filter { !$0.isActive }.prefix(3))
     }
@@ -111,19 +138,19 @@ package final class AppModel: ObservableObject {
 
     package var selectedTheme: ThemeRecord? {
         guard let selectedThemeID else { return nil }
+        if selectedSection == .library || selectedSection == .recent {
+            return visibleThemes.first { $0.libraryID == selectedThemeID }
+        }
         return themes.first { $0.libraryID == selectedThemeID }
     }
 
     package var retryAvailable: Bool {
         guard !operation.isBusy, let retryIntent else { return false }
-        guard retryTargetExists(for: retryIntent) else {
-            self.retryIntent = nil
-            return false
-        }
-        return true
+        return retryTargetExists(for: retryIntent)
     }
 
     package func selectTheme(_ theme: ThemeRecord?) {
+        if let theme, !visibleThemes.contains(where: { $0.libraryID == theme.libraryID }) { return }
         selectedThemeID = theme?.libraryID
     }
 
@@ -144,12 +171,12 @@ package final class AppModel: ObservableObject {
     package func retryLastAction() async {
         guard !operation.isBusy, let retryIntent else { return }
         switch retryIntent {
-        case .apply(let id):
+        case .apply(let id, let scope):
             guard let theme = themes.first(where: { $0.libraryID == id }) else {
                 self.retryIntent = nil
                 return
             }
-            await performApply(theme)
+            await performApply(theme, scope: scope)
         case .pause:
             await pauseTheme()
         case .restart:
@@ -174,16 +201,28 @@ package final class AppModel: ObservableObject {
         }
     }
 
-    package func apply(_ theme: ThemeRecord) async {
+    package func applySelectedTheme() async {
+        guard let theme = selectedTheme else { return }
+        await applyResolvedTheme(theme, scope: .mainWindow)
+    }
+
+    package func applyMenuBarRecentTheme(_ theme: ThemeRecord) async {
+        guard menuBarRecentThemes.contains(where: { $0.libraryID == theme.libraryID }) else { return }
+        await applyResolvedTheme(theme, scope: .menuBar)
+    }
+
+    private func applyResolvedTheme(_ theme: ThemeRecord, scope: ApplyScope) async {
         guard !operation.isBusy else { return }
+        operation = .preflighting
         let current = (try? await engine.status()) ?? status
         status = current
         if current?.codexRunning == true && current?.cdpOk != true {
             pendingRestartThemeID = theme.libraryID
+            pendingRestartApplyScope = scope
             operation = .idle
             return
         }
-        await performApply(theme)
+        await performApply(theme, scope: scope)
     }
 
     package func confirmPendingRestartApply() async {
@@ -191,17 +230,20 @@ package final class AppModel: ObservableObject {
               let id = pendingRestartThemeID,
               let theme = themes.first(where: { $0.libraryID == id })
         else { return }
+        let scope = pendingRestartApplyScope ?? .mainWindow
         pendingRestartThemeID = nil
-        await performApply(theme)
+        pendingRestartApplyScope = nil
+        await performApply(theme, scope: scope)
     }
 
     package func cancelPendingRestartApply() {
         guard !operation.isBusy else { return }
         pendingRestartThemeID = nil
+        pendingRestartApplyScope = nil
     }
 
-    private func performApply(_ theme: ThemeRecord) async {
-        retryIntent = .apply(theme.libraryID)
+    private func performApply(_ theme: ThemeRecord, scope: ApplyScope) async {
+        retryIntent = .apply(theme.libraryID, scope)
         operation = .switching
         do {
             try await engine.switchTheme(libraryID: theme.libraryID)
@@ -267,8 +309,8 @@ package final class AppModel: ObservableObject {
     }
 
     package func replacePendingImport() async {
-        guard !operation.isBusy, let packageURL = pendingReplacementURL else { return }
-        pendingReplacementURL = nil
+        guard !operation.isBusy, let packageURL = pendingReplacement?.packageURL else { return }
+        pendingReplacement = nil
         defer { try? FileManager.default.removeItem(at: packageURL) }
         _ = await performImport(packageURL, replace: true)
     }
@@ -299,6 +341,9 @@ package final class AppModel: ObservableObject {
         do {
             try await engine.pauseTheme()
             try await reloadState(requiringStatus: true)
+            guard status?.session.lowercased() == "paused" else {
+                throw ManagerError.invalidResponse("暂停命令完成，但引擎仍未进入暂停状态。")
+            }
             retryIntent = nil
             operation = .succeeded("主题已暂停")
         } catch {
@@ -313,6 +358,12 @@ package final class AppModel: ObservableObject {
         do {
             try await engine.restartTheme()
             try await reloadState(requiringStatus: true)
+            guard status?.codexRunning == true,
+                  status?.injectorAlive == true,
+                  status?.cdpOk == true
+            else {
+                throw ManagerError.invalidResponse("重启命令完成，但 Codex、注入器或 CDP 未全部恢复健康。")
+            }
             retryIntent = nil
             operation = .succeeded("Codex 已重新启动并应用主题")
         } catch {
@@ -323,25 +374,50 @@ package final class AppModel: ObservableObject {
     private func completeImport(_ packageURL: URL, generation: Int, scoped: Bool) async {
         defer { if scoped { packageURL.stopAccessingSecurityScopedResource() } }
         guard generation == importGeneration else { return }
-        operation = .importing
         do {
-            let result = try await engine.importTheme(packageURL: packageURL, replace: false)
+            let staged = try ThemePackageDeferredStore.stage(packageURL, root: deferredImportRoot)
+            var keepSnapshot = false
+            defer { if !keepSnapshot { try? FileManager.default.removeItem(at: staged) } }
             guard generation == importGeneration else { return }
-            try await reloadState()
-            guard generation == importGeneration else { return }
-            operation = .succeeded("已导入 \(result.themeName)")
-        } catch ManagerError.themeAlreadyExists {
-            guard generation == importGeneration else { return }
+            operation = .importing
             do {
-                let staged = try ThemePackageDeferredStore.stage(packageURL, root: deferredImportRoot)
+                let result = try await engine.importTheme(packageURL: staged, replace: false)
                 guard generation == importGeneration else {
-                    try? FileManager.default.removeItem(at: staged)
                     return
                 }
-                pendingReplacementURL = staged
+                try await reloadState()
+                guard generation == importGeneration else { return }
+                operation = .succeeded("已导入 \(result.themeName)")
+            } catch ManagerError.themeAlreadyExists(let incomingID, let incomingName) {
+                guard generation == importGeneration else { return }
+                let normalizedID = incomingID.trimmingCharacters(in: .whitespacesAndNewlines)
+                let normalizedName = incomingName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalizedID.isEmpty, !normalizedName.isEmpty else {
+                    operation = .failed("主题导入器返回了无法识别的重复主题信息。")
+                    return
+                }
+                // Replacement is destructive, so stale in-memory catalog data is not sufficient
+                // when the current installed identity cannot be read and verified.
+                let installedThemes = try catalog.loadThemes()
+                guard let existing = installedThemes.first(where: {
+                    $0.libraryID == normalizedID || $0.manifest.id == normalizedID
+                }) else {
+                    operation = .failed("主题包与已安装主题身份不一致，已取消替换。")
+                    return
+                }
+                keepSnapshot = true
+                pendingReplacement = PendingThemeReplacement(
+                    packageURL: staged,
+                    incomingID: normalizedID,
+                    incomingName: normalizedName,
+                    existingID: existing.manifest.id,
+                    existingName: existing.manifest.name
+                )
                 operation = .idle
             } catch {
-                operation = .failed(message(for: error))
+                if generation == importGeneration {
+                    operation = .failed(message(for: error))
+                }
             }
         } catch {
             if generation == importGeneration {
@@ -368,16 +444,20 @@ package final class AppModel: ObservableObject {
 
     private func retryTargetExists(for retryIntent: RetryIntent) -> Bool {
         switch retryIntent {
-        case .apply(let id), .export(let id, _):
-            themes.contains(where: { $0.libraryID == id })
+        case .apply(let id, .menuBar):
+            return menuBarRecentThemes.contains(where: { $0.libraryID == id })
+        case .apply(let id, .mainWindow), .export(let id, _):
+            guard themes.contains(where: { $0.libraryID == id }) else { return false }
+            guard selectedSection == .recent else { return true }
+            return visibleThemes.contains(where: { $0.libraryID == id })
         case .pause, .restart, .restore:
-            true
+            return true
         }
     }
 
     private func discardPendingReplacement() {
-        guard let packageURL = pendingReplacementURL else { return }
-        pendingReplacementURL = nil
+        guard let packageURL = pendingReplacement?.packageURL else { return }
+        pendingReplacement = nil
         try? FileManager.default.removeItem(at: packageURL)
     }
 
@@ -389,17 +469,22 @@ package final class AppModel: ObservableObject {
             status = try? await engine.status()
         }
         pruneRecentThemes()
-        let available = Set(themes.map(\.libraryID))
-        if let selectedThemeID, available.contains(selectedThemeID) {
-            // Preserve the user's inspected theme even when it is not active.
+        if selectedSection == .dashboard {
+            let available = Set(themes.map(\.libraryID))
+            if let selectedThemeID, available.contains(selectedThemeID) {
+                // Preserve the inspected installed theme on the dashboard.
+            } else {
+                selectedThemeID = themes.first(where: \.isActive)?.libraryID ?? themes.first?.libraryID
+            }
         } else {
-            selectedThemeID = themes.first(where: \.isActive)?.libraryID ?? themes.first?.libraryID
+            reconcileVisibleSelection()
         }
+        retireInvalidRetryIntent()
     }
 
     private func recordRecent(_ libraryID: String) {
         let available = Set(themes.map(\.libraryID))
-        var ids = [libraryID] + recentThemeIDs.filter { $0 != libraryID }
+        var ids = Self.deduplicatedRecentIDs([libraryID] + recentThemeIDs)
         ids = ids.filter { available.contains($0) }
         recentThemeIDs = Array(ids.prefix(8))
         defaults.set(recentThemeIDs, forKey: recentThemeKey)
@@ -407,11 +492,43 @@ package final class AppModel: ObservableObject {
 
     private func pruneRecentThemes() {
         let available = Set(themes.map(\.libraryID))
-        let filtered = Array(recentThemeIDs.filter { available.contains($0) }.prefix(8))
+        let filtered = Array(
+            Self.deduplicatedRecentIDs(recentThemeIDs)
+                .filter { available.contains($0) }
+                .prefix(8)
+        )
         if filtered != recentThemeIDs {
             recentThemeIDs = filtered
             defaults.set(filtered, forKey: recentThemeKey)
         }
+    }
+
+    private func reconcileVisibleSelection() {
+        guard selectedSection == .library || selectedSection == .recent else { return }
+        let visible = visibleThemes
+        if let selectedThemeID, visible.contains(where: { $0.libraryID == selectedThemeID }) {
+            retireInvalidRetryIntent()
+            return
+        }
+        selectedThemeID = visible.first?.libraryID
+        if let pendingRestartThemeID,
+           selectedSection == .recent,
+           !visible.contains(where: { $0.libraryID == pendingRestartThemeID }) {
+            self.pendingRestartThemeID = nil
+            pendingRestartApplyScope = nil
+        }
+        retireInvalidRetryIntent()
+    }
+
+    private func retireInvalidRetryIntent() {
+        if let retryIntent, !retryTargetExists(for: retryIntent) {
+            self.retryIntent = nil
+        }
+    }
+
+    private static func deduplicatedRecentIDs(_ ids: [String]) -> [String] {
+        var seen = Set<String>()
+        return ids.filter { seen.insert($0).inserted }
     }
 
     private func message(for error: Error) -> String {

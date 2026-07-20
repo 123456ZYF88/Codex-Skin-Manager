@@ -8,7 +8,7 @@ package protocol ThemePackageFileOperating: Sendable {
     func createDirectory(at url: URL, permissions: Int) throws
     func setPermissions(_ permissions: Int, at url: URL) throws
     func permissions(at url: URL) throws -> Int
-    func copyItem(at source: URL, to destination: URL) throws
+    func snapshotRegularFile(at source: URL, to destination: URL, maximumBytes: Int64) throws
     func removeItem(at url: URL) throws
 }
 
@@ -38,7 +38,17 @@ package struct POSIXThemePackageFileOperations: ThemePackageFileOperating, @unch
         }
         return value
     }
-    package func copyItem(at source: URL, to destination: URL) throws { try FileManager.default.copyItem(at: source, to: destination) }
+    package func snapshotRegularFile(at source: URL, to destination: URL, maximumBytes: Int64) throws {
+        do {
+            try POSIXExportFileOperations().snapshotSource(
+                at: source,
+                to: destination,
+                maximumBytes: maximumBytes
+            )
+        } catch {
+            throw ManagerError.invalidPackage("导入主题包必须是稳定的普通文件且不得超过 20 MB。")
+        }
+    }
     package func removeItem(at url: URL) throws { try FileManager.default.removeItem(at: url) }
 }
 
@@ -63,7 +73,11 @@ package enum ThemePackageDeferredStore {
         try prepareRoot(root, operations: operations)
         let destination = root.appendingPathComponent("\(UUID().uuidString).codexskin")
         do {
-            try operations.copyItem(at: source, to: destination)
+            try operations.snapshotRegularFile(
+                at: source,
+                to: destination,
+                maximumBytes: 20 * 1_024 * 1_024
+            )
             try operations.setPermissions(0o600, at: destination)
             guard isRegularPackage(destination, operations: operations),
                   try operations.permissions(at: destination) == 0o600

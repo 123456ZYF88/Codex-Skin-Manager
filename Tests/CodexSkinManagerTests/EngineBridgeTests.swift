@@ -27,6 +27,7 @@ enum EngineBridgeTests {
         try await mapsValidationToImporterWithoutMutationFlags()
         try validateOnlyExitsBeforeThemePublication()
         try await mapsDuplicateImportToTypedError()
+        try await rejectsMalformedDuplicateIdentity()
         try await processRunnerKeepsArgumentsLiteral()
         try await processRunnerCapsOutput()
         try await processRunnerTimesOut()
@@ -152,8 +153,36 @@ enum EngineBridgeTests {
                 replace: false
             )
             throw TestFailure(description: "duplicate import should throw")
-        } catch ManagerError.themeAlreadyExists(let id) {
+        } catch ManagerError.themeAlreadyExists(let id, let name) {
             try expect(id == "duplicate-id", "duplicate id must be preserved")
+            try expect(name == "Duplicate", "duplicate name must be preserved")
+        }
+    }
+
+    private static func rejectsMalformedDuplicateIdentity() async throws {
+        let runner = RecordingCommandRunner(results: [
+            CommandResult(exitCode: 3, stdout: "not-json", stderr: "exists"),
+            CommandResult(
+                exitCode: 3,
+                stdout: #"{"pass":false,"code":"theme_exists","message":"exists","themeId":" ","themeName":""}"#,
+                stderr: "exists"
+            ),
+        ])
+        let bridge = EngineBridge(engineRoot: URL(fileURLWithPath: "/tmp/fake-engine"), runner: runner)
+
+        for name in ["malformed", "empty-identity"] {
+            do {
+                _ = try await bridge.importTheme(
+                    packageURL: URL(fileURLWithPath: "/tmp/\(name).codexskin"),
+                    replace: false
+                )
+                throw TestFailure(description: "invalid duplicate metadata should throw")
+            } catch ManagerError.invalidResponse(let message) {
+                try expect(
+                    message == "主题导入器返回了无法识别的重复主题信息。",
+                    "invalid duplicate metadata must fail closed"
+                )
+            }
         }
     }
 

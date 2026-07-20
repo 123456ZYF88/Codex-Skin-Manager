@@ -90,7 +90,10 @@ package struct ThemeLibraryQuery: Equatable, Sendable {
 
     package func filtered(themes: [ThemeRecord], recentIDs: [String]) -> [ThemeRecord] {
         let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let recentIndex = Dictionary(uniqueKeysWithValues: recentIDs.enumerated().map { ($1, $0) })
+        var recentIndex: [String: Int] = [:]
+        for (index, id) in recentIDs.enumerated() where recentIndex[id] == nil {
+            recentIndex[id] = index
+        }
         let matches = themes.filter { theme in
             let searchMatches = needle.isEmpty
                 || theme.manifest.name.localizedCaseInsensitiveContains(needle)

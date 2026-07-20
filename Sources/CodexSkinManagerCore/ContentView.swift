@@ -83,7 +83,7 @@ package struct ContentView: View {
             }
             Button("取消", role: .cancel) { model.cancelPendingImport() }
         } message: {
-            Text("替换会更新主题库中的同名 ID，但不会自动应用。")
+            Text(model.pendingReplacementConfirmationText ?? "替换后不会自动应用。")
         }
         .alert("需要重新启动 Codex", isPresented: restartAlertBinding) {
             Button("重启并应用") {
@@ -203,8 +203,8 @@ package struct ContentView: View {
             guard !model.operation.isBusy else { return }
             presentExportPanel()
         case .applySelected:
-            guard !model.operation.isBusy, let theme = model.selectedTheme else { return }
-            Task { await model.apply(theme) }
+            guard !model.operation.isBusy, model.selectedTheme != nil else { return }
+            Task { await model.applySelectedTheme() }
         case .restoreOriginal:
             guard !model.operation.isBusy else { return }
             confirmingRestore = true

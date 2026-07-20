@@ -16,8 +16,30 @@ package struct ThemeImportResult: Codable, Equatable, Sendable {
     }
 }
 
+package struct PendingThemeReplacement: Equatable, Sendable {
+    package let packageURL: URL
+    package let incomingID: String
+    package let incomingName: String
+    package let existingID: String
+    package let existingName: String
+
+    package init(
+        packageURL: URL,
+        incomingID: String,
+        incomingName: String,
+        existingID: String,
+        existingName: String
+    ) {
+        self.packageURL = packageURL
+        self.incomingID = incomingID
+        self.incomingName = incomingName
+        self.existingID = existingID
+        self.existingName = existingName
+    }
+}
+
 package enum ManagerError: Error, Equatable, LocalizedError {
-    case themeAlreadyExists(id: String)
+    case themeAlreadyExists(id: String, name: String)
     case engine(String)
     case invalidPackage(String)
     case invalidResponse(String)
@@ -84,8 +106,21 @@ package struct EngineBridge: EngineControlling, Sendable {
             timeout: 45
         )
         if result.exitCode == 3 {
-            let payload = try? JSONDecoder().decode(ThemeImportResult.self, from: Data(result.stdout.utf8))
-            throw ManagerError.themeAlreadyExists(id: payload?.themeId ?? "")
+            guard let payload = try? JSONDecoder().decode(
+                ThemeImportResult.self,
+                from: Data(result.stdout.utf8)
+            ) else {
+                throw ManagerError.invalidResponse("主题导入器返回了无法识别的重复主题信息。")
+            }
+            let themeID = payload.themeId.trimmingCharacters(in: .whitespacesAndNewlines)
+            let themeName = payload.themeName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard payload.code == "theme_exists", !themeID.isEmpty, !themeName.isEmpty else {
+                throw ManagerError.invalidResponse("主题导入器返回了无法识别的重复主题信息。")
+            }
+            throw ManagerError.themeAlreadyExists(
+                id: themeID,
+                name: themeName
+            )
         }
         try requireSuccess(result)
         do {

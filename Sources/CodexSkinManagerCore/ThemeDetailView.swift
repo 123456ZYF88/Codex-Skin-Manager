@@ -46,7 +46,7 @@ package struct ThemeDetailView: View {
                         Button("当前主题") {}
                             .disabled(true)
                         Button {
-                            Task { await model.apply(theme) }
+                            Task { await model.applySelectedTheme() }
                         } label: {
                             Label("重新应用", systemImage: "arrow.clockwise.circle.fill")
                         }
@@ -54,7 +54,7 @@ package struct ThemeDetailView: View {
                         .tint(VisualStyle.ice)
                     } else {
                         Button {
-                            Task { await model.apply(theme) }
+                            Task { await model.applySelectedTheme() }
                         } label: {
                             Label("装备主题", systemImage: "shield.lefthalf.filled")
                         }

@@ -27,14 +27,16 @@ package struct ThemeToolbar: View {
                 .focused($searchIsFocused)
                 .accessibilityLabel("搜索主题")
 
-            Picker("筛选", selection: $model.themeFilter) {
-                ForEach(ThemeFilter.allCases) { filter in
-                    Text(filter.title).tag(filter)
+            if model.selectedSection != .recent {
+                Picker("筛选", selection: $model.themeFilter) {
+                    ForEach(ThemeFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
                 }
+                .labelsHidden()
+                .frame(width: 110)
+                .accessibilityLabel("主题筛选")
             }
-            .labelsHidden()
-            .frame(width: 110)
-            .accessibilityLabel("主题筛选")
 
             Picker("排序", selection: $model.themeSort) {
                 ForEach(ThemeSort.allCases) { sort in

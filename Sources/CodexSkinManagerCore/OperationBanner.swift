@@ -63,6 +63,8 @@ package struct OperationBanner: View {
         switch model.operation {
         case .idle:
             ("snowflake", "准备就绪", VisualStyle.ice)
+        case .preflighting:
+            ("checkmark.shield", "正在检查 Codex 状态…", VisualStyle.warning)
         case .validating:
             ("checkmark.shield", "正在验证主题包…", VisualStyle.warning)
         case .switching:

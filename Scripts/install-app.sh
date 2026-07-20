@@ -17,8 +17,18 @@ INSTALL_ROOT="$HOME/Applications"
 TARGET_APP="$INSTALL_ROOT/Codex Skin Manager.app"
 INSTALLING_APP="$INSTALL_ROOT/.Codex Skin Manager.app.installing.$$"
 BACKUP_APP="$INSTALL_ROOT/.Codex Skin Manager.app.previous.$$"
+ENGINE_ROOT="${CODEX_DREAM_SKIN_ENGINE:-$HOME/.codex/codex-dream-skin-studio}"
+ENGINE_SCRIPTS="$ENGINE_ROOT/scripts"
+EXTENSION_TEMP=""
 
 cleanup_install() {
+  case "${EXTENSION_TEMP:-}" in
+    "$ENGINE_SCRIPTS/.import-theme-pack-macos.sh.$$"|"$ENGINE_SCRIPTS/.restart-dream-skin-macos.sh.$$")
+      if [ -e "$EXTENSION_TEMP" ] || [ -L "$EXTENSION_TEMP" ]; then
+        /bin/rm -f "$EXTENSION_TEMP"
+      fi
+      ;;
+  esac
   case "${INSTALLING_APP:-}/" in
     "$INSTALL_ROOT/.Codex Skin Manager.app.installing."*) /bin/rm -rf "$INSTALLING_APP" ;;
   esac
@@ -48,8 +58,6 @@ fi
 /bin/mv "$INSTALLING_APP" "$TARGET_APP"
 if [ -e "$BACKUP_APP" ]; then /bin/rm -rf "$BACKUP_APP"; fi
 
-ENGINE_ROOT="${CODEX_DREAM_SKIN_ENGINE:-$HOME/.codex/codex-dream-skin-studio}"
-ENGINE_SCRIPTS="$ENGINE_ROOT/scripts"
 if [ -f "$ENGINE_SCRIPTS/common-macos.sh" ] \
   && [ -f "$ENGINE_SCRIPTS/stage-theme.mjs" ] \
   && [ -f "$ENGINE_SCRIPTS/injector.mjs" ]; then
@@ -59,10 +67,11 @@ if [ -f "$ENGINE_SCRIPTS/common-macos.sh" ] \
     /usr/bin/install -m 700 "$EXTENSION_SOURCE" "$EXTENSION_TEMP"
     /bin/chmod 700 "$EXTENSION_TEMP"
     /bin/mv -f "$EXTENSION_TEMP" "$ENGINE_SCRIPTS/$extension"
+    EXTENSION_TEMP=""
     /usr/bin/printf 'Installed engine extension: %s\n' "$ENGINE_SCRIPTS/$extension"
   done
 else
-  /usr/bin/printf 'Warning: Dream Skin engine not found at %s; importing is unavailable until it is installed.\n' \
+  /usr/bin/printf 'Warning: Dream Skin engine not found at %s; theme importing, switching, pausing, restoring, and restarting are unavailable until it is installed.\n' \
     "$ENGINE_ROOT" >&2
 fi
 

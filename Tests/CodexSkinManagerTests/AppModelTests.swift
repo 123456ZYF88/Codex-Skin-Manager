@@ -5,6 +5,7 @@ final class FakeThemeCatalog: ThemeCatalogReading, @unchecked Sendable {
     private let lock = NSLock()
     private var storedThemes: [ThemeRecord]
     private var activeLibraryID: String?
+    private var loadFailure: ManagerError?
 
     init(themes: [ThemeRecord]) {
         storedThemes = themes
@@ -16,7 +17,13 @@ final class FakeThemeCatalog: ThemeCatalogReading, @unchecked Sendable {
         set { replaceThemes(newValue) }
     }
 
-    func loadThemes() throws -> [ThemeRecord] { loadThemesForTest() }
+    func loadThemes() throws -> [ThemeRecord] {
+        lock.lock()
+        let failure = loadFailure
+        lock.unlock()
+        if let failure { throw failure }
+        return loadThemesForTest()
+    }
 
     func loadActiveTheme() -> ThemeManifest? {
         loadThemesForTest().first(where: \.isActive)?.manifest
@@ -25,6 +32,12 @@ final class FakeThemeCatalog: ThemeCatalogReading, @unchecked Sendable {
     func setActiveLibraryID(_ id: String?) {
         lock.lock()
         activeLibraryID = id
+        lock.unlock()
+    }
+
+    func setLoadFailure(_ error: ManagerError?) {
+        lock.lock()
+        loadFailure = error
         lock.unlock()
     }
 
@@ -76,9 +89,9 @@ final class PostCopyFailureFileOperations: ThemePackageFileOperating, @unchecked
     func isRegularFile(at url: URL) throws -> Bool { try base.isRegularFile(at: url) }
     func createDirectory(at url: URL, permissions: Int) throws { try base.createDirectory(at: url, permissions: permissions) }
     func permissions(at url: URL) throws -> Int { try base.permissions(at: url) }
-    func copyItem(at source: URL, to destination: URL) throws {
-        try base.copyItem(at: source, to: destination)
+    func snapshotRegularFile(at source: URL, to destination: URL, maximumBytes: Int64) throws {
         partialDestination = destination
+        try base.snapshotRegularFile(at: source, to: destination, maximumBytes: maximumBytes)
     }
     func setPermissions(_ permissions: Int, at url: URL) throws {
         if url == partialDestination { throw Failure.hardening }
@@ -105,6 +118,7 @@ actor FakeEngine: EngineControlling {
     var validationFailure: ManagerError?
     var blockSwitch = false
     var blockImport = false
+    var blockStatus = false
     private var engineStatus = EngineStatus(
         session: "live",
         port: 9341,
@@ -120,12 +134,23 @@ actor FakeEngine: EngineControlling {
     private var importStarted = false
     private var importWaiters: [CheckedContinuation<Void, Never>] = []
     private var importRelease: CheckedContinuation<Void, Never>?
+    private var statusCallCount = 0
+    private var statusWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var statusReleases: [CheckedContinuation<Void, Never>] = []
 
     init(onSwitch: @escaping @Sendable (String) -> Void = { _ in }) {
         self.onSwitch = onSwitch
     }
 
     func status() async throws -> EngineStatus {
+        statusCallCount += 1
+        let count = statusCallCount
+        let ready = statusWaiters.filter { $0.0 <= count }
+        statusWaiters.removeAll { $0.0 <= count }
+        ready.forEach { $0.1.resume() }
+        if blockStatus {
+            await withCheckedContinuation { statusReleases.append($0) }
+        }
         if let statusFailure { throw statusFailure }
         return engineStatus
     }
@@ -158,7 +183,7 @@ actor FakeEngine: EngineControlling {
         if blockImport { await withCheckedContinuation { importRelease = $0 } }
         if let importFailure { throw importFailure }
         if duplicateOnNormalImport && !replace {
-            throw ManagerError.themeAlreadyExists(id: "duplicate")
+            throw ManagerError.themeAlreadyExists(id: "duplicate", name: "Incoming Duplicate")
         }
         return ThemeImportResult(
             pass: true,
@@ -195,6 +220,7 @@ actor FakeEngine: EngineControlling {
     func setValidationFailure(_ error: ManagerError?) { validationFailure = error }
     func setBlockSwitch(_ value: Bool) { blockSwitch = value }
     func setBlockImport(_ value: Bool) { blockImport = value }
+    func setBlockStatus(_ value: Bool) { blockStatus = value }
     func setStatus(_ status: EngineStatus) { engineStatus = status }
 
     func waitForSwitchStart() async {
@@ -216,6 +242,19 @@ actor FakeEngine: EngineControlling {
         importRelease?.resume()
         importRelease = nil
     }
+
+    func waitForStatusCallCount(_ expected: Int) async {
+        if statusCallCount >= expected { return }
+        await withCheckedContinuation { statusWaiters.append((expected, $0)) }
+    }
+
+    func releaseStatuses() {
+        blockStatus = false
+        statusReleases.forEach { $0.resume() }
+        statusReleases.removeAll()
+    }
+
+    func currentStatusCallCount() -> Int { statusCallCount }
 
     func snapshot() -> (
         switchedIDs: [String],
@@ -240,15 +279,24 @@ enum AppModelTests {
         try await confirmPendingRestartApplyVerifiesAndRecordsTheme()
         try await selectsInactiveThemeWithoutChangingActivity()
         try await refreshFallsBackWhenSelectedThemeIsRemoved()
+        try await recentSectionReconcilesToVisibleSelection()
+        try await emptyAndFilteredRecentBlockHiddenThemeActions()
+        try await menuBarRecentApplyIgnoresMainWindowFilter()
         try await menuBarRecentThemesExcludeActiveAndStayLimitedToThree()
+        try await persistedRecentsDeduplicatePruneAndRespectCaps()
         try commandRequestsAreConsumedOnceAcrossWindows()
         try winningFocusClaimUpdatesOnlyOneWindowLocalTrigger()
+        try await applyReservesPreflightBeforeStatusAwait()
         try await ignoresSecondActionWhileBusy()
         try await duplicateImportExposesReplaceConfirmation()
+        try await unmatchedDuplicateIdentityFailsClosedAndDeletesSnapshot()
+        try await duplicateIdentityCatalogReadFailureFailsClosedAndDeletesSnapshot()
         try await duplicateImportCanBeCancelled()
         try await restoreCallsOnlyRestoreCommand()
         try await pauseRefreshesStatus()
         try await restartRefreshesStatus()
+        try await restartRejectsUnhealthyStatus()
+        try await pauseRejectsUnchangedStatus()
         try await pauseFailsWhenStatusRefreshFails()
         try await restartFailsWhenStatusRefreshFails()
         try await busySwitchBlocksPauseAndRestart()
@@ -261,6 +309,8 @@ enum AppModelTests {
         try await failedImportDoesNotRetryStaleSecurityScopedURL()
         try await failedImportRetiresEarlierRetryIntent()
         try await retryIsUnavailableWhenItsThemeIsRemoved()
+        try await reloadRetiresRetryBeforeRemovedThemeReappears()
+        try await recentFilterTransitionRetiresHiddenRetry()
         try await exportRetrySurvivesSelectionChange()
         try await exportRetryIsUnavailableWhenItsThemeIsRemoved()
         try deferredReplacementStagingRejectsSymlinksAndPreservesAPrivateCopy()
@@ -268,10 +318,38 @@ enum AppModelTests {
         try await pendingReplacementIsCleanedOnCancelAndNextImport()
         try safeExportNameSanitizesPrimaryAndFallbackNames()
         try deferredStoreCorrectsAnExistingWorldReadableRoot()
+        try deferredStoreRejectsOversizedSnapshot()
         try deferredStoreRemovesPartialCopyWhenPostCopyHardeningFails()
         try await importReservationRejectsBusyDrops()
         try await importTransactionRetainsModelUntilScopeCompletes()
         print("PASS: AppModelTests")
+    }
+
+    @MainActor
+    private static func applyReservesPreflightBeforeStatusAwait() async throws {
+        let firstTheme = makeThemeRecord(id: "preflight-first")
+        let secondTheme = makeThemeRecord(id: "preflight-second")
+        let catalog = FakeThemeCatalog(themes: [firstTheme, secondTheme])
+        let engine = FakeEngine(onSwitch: { id in catalog.setActiveLibraryID(id) })
+        let model = AppModel(catalog: catalog, engine: engine, defaults: makeDefaults())
+        await model.refresh()
+        await engine.setBlockStatus(true)
+
+        model.selectTheme(firstTheme)
+        let first = Task { @MainActor in await model.applySelectedTheme() }
+        await engine.waitForStatusCallCount(2)
+        try expect(model.operation == .preflighting, "apply must reserve a typed busy state before awaiting status")
+        model.selectTheme(secondTheme)
+        let second = Task { @MainActor in await model.applySelectedTheme() }
+        for _ in 0..<20 { await Task.yield() }
+        let statusCalls = await engine.currentStatusCallCount()
+        try expect(statusCalls == 2, "a second apply must not start another status preflight")
+
+        await engine.releaseStatuses()
+        await first.value
+        await second.value
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.switchedIDs == ["preflight-first"], "only the reserved apply may reach the engine")
     }
 
     @MainActor
@@ -287,7 +365,8 @@ enum AppModelTests {
         )
 
         await model.refresh()
-        await model.apply(theme)
+        model.selectTheme(theme)
+        await model.applySelectedTheme()
 
         try expect(model.operation == .failed("切换失败"), "fixture must enter the failed state")
         try expect(model.retryAvailable, "failed apply must retain a typed retry intent")
@@ -309,6 +388,10 @@ enum AppModelTests {
 
         try expect(model.retryAvailable, "failed pause must retain a typed pause retry intent")
         await engine.setStatusFailure(nil)
+        await engine.setStatus(EngineStatus(
+            session: "paused", port: 9341, injectorAlive: false,
+            cdpOk: false, codexRunning: true, themeName: ""
+        ))
         await model.retryLastAction()
 
         let snapshot = await engine.snapshot()
@@ -359,7 +442,8 @@ enum AppModelTests {
         await engine.setSwitchFailure(.engine("切换失败"))
         let model = AppModel(catalog: catalog, engine: engine, defaults: makeDefaults())
         await model.refresh()
-        await model.apply(theme)
+        model.selectTheme(theme)
+        await model.applySelectedTheme()
         try expect(model.retryAvailable, "fixture must retain an earlier retryable action")
 
         await engine.setImportFailure(.engine("主题包验证失败"))
@@ -379,7 +463,8 @@ enum AppModelTests {
         await engine.setSwitchFailure(.engine("切换失败"))
         let model = AppModel(catalog: catalog, engine: engine, defaults: makeDefaults())
         await model.refresh()
-        await model.apply(theme)
+        model.selectTheme(theme)
+        await model.applySelectedTheme()
         catalog.themes = []
         await model.refresh()
 
@@ -412,6 +497,50 @@ enum AppModelTests {
         await model.retryLastAction()
         let exports = await exporter.snapshot()
         try expect(exports.map(\.themeID) == ["export-original", "export-original"], "retry must export the stored target, not the new selection")
+    }
+
+    @MainActor
+    private static func reloadRetiresRetryBeforeRemovedThemeReappears() async throws {
+        let theme = makeThemeRecord(id: "reload-retired")
+        let catalog = FakeThemeCatalog(themes: [theme])
+        let engine = FakeEngine()
+        await engine.setSwitchFailure(.engine("切换失败"))
+        let model = AppModel(catalog: catalog, engine: engine, defaults: makeDefaults())
+        await model.refresh()
+        model.selectTheme(theme)
+        await model.applySelectedTheme()
+        try expect(model.retryAvailable, "fixture must begin with a valid apply retry")
+
+        catalog.themes = []
+        await model.refresh()
+        catalog.themes = [theme]
+        await model.refresh()
+
+        try expect(!model.retryAvailable, "reload must retire the retry while its target is absent")
+        await engine.setSwitchFailure(nil)
+        await model.retryLastAction()
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.switchedIDs == ["reload-retired"], "a reappearing theme must not resurrect a retired retry")
+    }
+
+    @MainActor
+    private static func recentFilterTransitionRetiresHiddenRetry() async throws {
+        let theme = makeThemeRecord(id: "recent-retry")
+        let defaults = makeDefaults()
+        defaults.set(["recent-retry"], forKey: "recentThemeLibraryIDs")
+        let engine = FakeEngine()
+        await engine.setSwitchFailure(.engine("切换失败"))
+        let model = AppModel(catalog: FakeThemeCatalog(themes: [theme]), engine: engine, defaults: defaults)
+        await model.refresh()
+        model.selectedSection = .recent
+        model.selectTheme(theme)
+        await model.applySelectedTheme()
+        try expect(model.retryAvailable, "fixture must begin with a visible Recent retry")
+
+        model.searchText = "missing"
+        model.searchText = ""
+
+        try expect(!model.retryAvailable, "a Recent filter transition must retire a retry once its target becomes hidden")
     }
 
     @MainActor
@@ -466,7 +595,12 @@ enum AppModelTests {
 
         let engine = FakeEngine()
         await engine.setDuplicateOnNormalImport(true)
-        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults(), deferredImportRoot: storeRoot)
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: [makeThemeRecord(id: "duplicate")]),
+            engine: engine,
+            defaults: makeDefaults(),
+            deferredImportRoot: storeRoot
+        )
         let requiresReplacement = await model.importPackage(source)
         try expect(requiresReplacement, "duplicate import must request deferred replacement staging")
         let staged = try unwrap(model.pendingReplacementURL, "duplicate import must commit a staged package")
@@ -476,7 +610,7 @@ enum AppModelTests {
         await model.replacePendingImport()
 
         let snapshot = await engine.snapshot()
-        try expect(snapshot.importURLs == [source, staged], "replacement must use the app-owned staged file after the original disappears")
+        try expect(snapshot.importURLs == [staged, staged], "duplicate detection and replacement must use the same stable snapshot")
         try expect(!FileManager.default.fileExists(atPath: staged.path), "staged package must be removed after replacement")
     }
 
@@ -493,7 +627,12 @@ enum AppModelTests {
         let root = temporary.appendingPathComponent("store", isDirectory: true)
         let engine = FakeEngine()
         await engine.setDuplicateOnNormalImport(true)
-        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults(), deferredImportRoot: root)
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: [makeThemeRecord(id: "duplicate")]),
+            engine: engine,
+            defaults: makeDefaults(),
+            deferredImportRoot: root
+        )
 
         _ = await model.importPackage(first)
         let firstStaged = try unwrap(model.pendingReplacementURL, "first duplicate must stage")
@@ -544,6 +683,26 @@ enum AppModelTests {
 
         try expect(operations.partialDestination != nil, "fixture must copy a destination before failing")
         try expect(operations.removedPartialCopy, "failed post-copy hardening must remove the partial destination")
+    }
+
+    private static func deferredStoreRejectsOversizedSnapshot() throws {
+        let temporary = try makeTemporaryDirectory(prefix: "deferred-size-bound")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let source = temporary.appendingPathComponent("oversized.codexskin")
+        try Data([0x50]).write(to: source)
+        let handle = try FileHandle(forWritingTo: source)
+        try handle.truncate(atOffset: UInt64(20 * 1_024 * 1_024 + 1))
+        try handle.close()
+
+        do {
+            _ = try ThemePackageDeferredStore.stage(
+                source,
+                root: temporary.appendingPathComponent("store", isDirectory: true)
+            )
+            throw TestFailure(description: "oversized import snapshot must be rejected")
+        } catch ManagerError.invalidPackage(let message) {
+            try expect(message.contains("20 MB"), "oversized snapshot must report its exact bound")
+        }
     }
 
     @MainActor
@@ -655,8 +814,10 @@ enum AppModelTests {
         let model = AppModel(catalog: catalog, engine: engine, defaults: defaults)
 
         try expect(model.operation == .idle, "model must start idle")
+        await model.refresh()
         for theme in themes {
-            await model.apply(theme)
+            model.selectTheme(theme)
+            await model.applySelectedTheme()
         }
 
         let snapshot = await engine.snapshot()
@@ -675,7 +836,8 @@ enum AppModelTests {
         ))
         let model = AppModel(catalog: catalog, engine: engine, defaults: makeDefaults())
         await model.refresh()
-        await model.apply(catalog.themes[0])
+        model.selectTheme(catalog.themes[0])
+        await model.applySelectedTheme()
         try expect(model.pendingRestartThemeID == "cold", "restart consent must retain the theme id")
         let snapshot = await engine.snapshot()
         try expect(snapshot.switchedIDs.isEmpty, "theme must not switch before consent")
@@ -688,7 +850,8 @@ enum AppModelTests {
         let engine = FakeEngine(onSwitch: { _ in })
         let model = AppModel(catalog: catalog, engine: engine, defaults: makeDefaults())
         await model.refresh()
-        await model.apply(theme)
+        model.selectTheme(theme)
+        await model.applySelectedTheme()
         try expect(model.operation == .failed("主题切换完成，但未验证到目标主题。"), "unverified apply must fail")
     }
 
@@ -706,7 +869,9 @@ enum AppModelTests {
             defaults: makeDefaults()
         )
 
-        await model.apply(theme)
+        await model.refresh()
+        model.selectTheme(theme)
+        await model.applySelectedTheme()
         model.cancelPendingRestartApply()
 
         try expect(model.pendingRestartThemeID == nil, "cancel must clear restart consent")
@@ -726,7 +891,8 @@ enum AppModelTests {
         let model = AppModel(catalog: catalog, engine: engine, defaults: makeDefaults())
 
         await model.refresh()
-        await model.apply(theme)
+        model.selectTheme(theme)
+        await model.applySelectedTheme()
         await model.confirmPendingRestartApply()
 
         let snapshot = await engine.snapshot()
@@ -790,6 +956,64 @@ enum AppModelTests {
     }
 
     @MainActor
+    private static func recentSectionReconcilesToVisibleSelection() async throws {
+        let recent = makeThemeRecord(id: "recent-visible")
+        let installedOnly = makeThemeRecord(id: "installed-only")
+        let defaults = makeDefaults()
+        defaults.set(["recent-visible"], forKey: "recentThemeLibraryIDs")
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: [installedOnly, recent]),
+            engine: FakeEngine(),
+            defaults: defaults
+        )
+        await model.refresh()
+        model.selectTheme(installedOnly)
+
+        model.selectedSection = .recent
+
+        try expect(model.visibleThemes.map(\.libraryID) == ["recent-visible"], "Recent must project only persisted recent themes")
+        try expect(model.selectedThemeID == "recent-visible", "entering Recent must select only a visible recent theme")
+        try expect(model.selectedTheme?.libraryID == "recent-visible", "Recent detail must bind to the visible projection")
+    }
+
+    @MainActor
+    private static func emptyAndFilteredRecentBlockHiddenThemeActions() async throws {
+        let hidden = makeThemeRecord(id: "hidden-installed")
+        let engine = FakeEngine()
+        let exporter = FakeThemePackageExporter()
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: [hidden]),
+            engine: engine,
+            exporter: exporter,
+            defaults: makeDefaults()
+        )
+        await model.refresh()
+        model.selectedSection = .recent
+
+        try expect(model.visibleThemes.isEmpty, "Recent with no persisted IDs must be empty")
+        try expect(model.selectedThemeID == nil && model.selectedTheme == nil, "empty Recent must retire an installed-only selection")
+        await model.exportSelectedTheme(to: URL(fileURLWithPath: "/tmp/hidden.codexskin"))
+        await model.applySelectedTheme()
+        let exports = await exporter.snapshot()
+        let engineSnapshot = await engine.snapshot()
+        try expect(exports.isEmpty, "empty Recent must not export a hidden installed theme")
+        try expect(engineSnapshot.switchedIDs.isEmpty, "empty Recent must not apply a hidden installed theme")
+
+        let filteredDefaults = makeDefaults()
+        filteredDefaults.set(["hidden-installed"], forKey: "recentThemeLibraryIDs")
+        let filteredModel = AppModel(
+            catalog: FakeThemeCatalog(themes: [hidden]),
+            engine: FakeEngine(),
+            defaults: filteredDefaults
+        )
+        await filteredModel.refresh()
+        filteredModel.selectedSection = .recent
+        try expect(filteredModel.selectedThemeID == "hidden-installed", "fixture must begin with a visible recent selection")
+        filteredModel.searchText = "missing"
+        try expect(filteredModel.selectedThemeID == nil && filteredModel.selectedTheme == nil, "filtered Recent must clear a now-hidden selection")
+    }
+
+    @MainActor
     private static func commandRequestsAreConsumedOnceAcrossWindows() throws {
         let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: FakeEngine(), defaults: makeDefaults())
 
@@ -811,6 +1035,63 @@ enum AppModelTests {
             model.consumeCommandRequest(nonce: secondRequest.nonce) == .refresh,
             "a new nonce must remain consumable after the prior command was claimed"
         )
+    }
+
+    @MainActor
+    private static func menuBarRecentApplyIgnoresMainWindowFilter() async throws {
+        let theme = makeThemeRecord(id: "menu-visible", name: "Menu Visible")
+        let defaults = makeDefaults()
+        defaults.set(["menu-visible"], forKey: "recentThemeLibraryIDs")
+        let catalog = FakeThemeCatalog(themes: [theme])
+        let engine = FakeEngine(onSwitch: { id in catalog.setActiveLibraryID(id) })
+        let model = AppModel(catalog: catalog, engine: engine, defaults: defaults)
+        await model.refresh()
+        model.selectedSection = .recent
+        model.searchText = "hidden-in-main-window"
+
+        await engine.setSwitchFailure(.engine("菜单栏切换失败"))
+
+        await model.applyMenuBarRecentTheme(theme)
+
+        try expect(model.operation == .failed("菜单栏切换失败"), "fixture must retain the failed menu-bar apply")
+        try expect(model.retryAvailable, "menu-bar retry must use the menu-bar projection, not the hidden main-window projection")
+        await engine.setSwitchFailure(nil)
+        await model.retryLastAction()
+
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.switchedIDs == ["menu-visible", "menu-visible"], "menu-bar recents and their retry must use their own visible projection")
+    }
+
+    @MainActor
+    private static func persistedRecentsDeduplicatePruneAndRespectCaps() async throws {
+        let defaults = makeDefaults()
+        defaults.set(
+            ["one", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "two"],
+            forKey: "recentThemeLibraryIDs"
+        )
+        let allThemes = (1...9).map { index in
+            let names = ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+            return makeThemeRecord(id: names[index - 1], isActive: index == 1)
+        }
+        let catalog = FakeThemeCatalog(themes: allThemes)
+        let model = AppModel(catalog: catalog, engine: FakeEngine(), defaults: defaults)
+
+        try expect(
+            model.recentThemeIDs == ["one", "two", "three", "four", "five", "six", "seven", "eight"],
+            "persisted recents must deduplicate in first-seen order before the eight-item cap"
+        )
+        try expect(
+            defaults.stringArray(forKey: "recentThemeLibraryIDs") == model.recentThemeIDs,
+            "initial recents normalization must be persisted immediately"
+        )
+        await model.refresh()
+        try expect(model.recentThemes.count == 8, "the app Recent projection must remain capped at eight")
+        try expect(model.menuBarRecentThemes.map(\.libraryID) == ["two", "three", "four"], "menu recents must exclude active and cap at three")
+
+        catalog.themes = allThemes.filter { $0.libraryID != "three" }
+        await model.refresh()
+        try expect(!model.recentThemeIDs.contains("three"), "reload must prune uninstalled recent IDs")
+        try expect(defaults.stringArray(forKey: "recentThemeLibraryIDs") == model.recentThemeIDs, "pruned recents must be persisted")
     }
 
     @MainActor
@@ -861,7 +1142,9 @@ enum AppModelTests {
             defaults: makeDefaults()
         )
 
-        let first = Task { @MainActor in await model.apply(theme) }
+        await model.refresh()
+        model.selectTheme(theme)
+        let first = Task { @MainActor in await model.applySelectedTheme() }
         await engine.waitForSwitchStart()
         await model.restoreOriginal()
         let busySnapshot = await engine.snapshot()
@@ -878,17 +1161,82 @@ enum AppModelTests {
         try Data("duplicate".utf8).write(to: packageURL)
         let engine = FakeEngine()
         await engine.setDuplicateOnNormalImport(true)
-        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults(), deferredImportRoot: temporary.appendingPathComponent("store", isDirectory: true))
+        let existing = makeThemeRecord(id: "duplicate", name: "Existing Duplicate")
+        let model = AppModel(catalog: FakeThemeCatalog(themes: [existing]), engine: engine, defaults: makeDefaults(), deferredImportRoot: temporary.appendingPathComponent("store", isDirectory: true))
 
         let requiresReplacement = await model.importPackage(packageURL)
         try expect(requiresReplacement, "duplicate import must request an explicit staged replacement")
-        try expect(model.pendingReplacementURL != packageURL, "staged replacement must not retain the scoped source URL")
+        let pending = try unwrap(model.pendingReplacement, "duplicate import must preserve typed identities")
+        try expect(pending.packageURL != packageURL, "staged replacement must not retain the scoped source URL")
+        try expect(pending.incomingID == "duplicate" && pending.incomingName == "Incoming Duplicate", "incoming identity must come from the validated package")
+        try expect(pending.existingID == "duplicate" && pending.existingName == "Existing Duplicate", "existing identity must come from the installed record")
+        let confirmation = try unwrap(model.pendingReplacementConfirmationText, "duplicate confirmation text must be available")
+        for identity in ["Incoming Duplicate", "duplicate", "Existing Duplicate"] {
+            try expect(confirmation.contains(identity), "confirmation must show identity \(identity)")
+        }
         try expect(model.operation == .idle, "duplicate prompt must return to an actionable state")
         await model.replacePendingImport()
 
         let snapshot = await engine.snapshot()
         try expect(snapshot.importReplaceFlags == [false, true], "replacement must be explicit")
         try expect(model.pendingReplacementURL == nil, "replacement prompt must clear after use")
+    }
+
+    @MainActor
+    private static func unmatchedDuplicateIdentityFailsClosedAndDeletesSnapshot() async throws {
+        let temporary = try makeTemporaryDirectory(prefix: "duplicate-mismatch")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let packageURL = temporary.appendingPathComponent("unmatched.codexskin")
+        let stagingRoot = temporary.appendingPathComponent("store", isDirectory: true)
+        try Data("duplicate".utf8).write(to: packageURL)
+        let engine = FakeEngine()
+        await engine.setDuplicateOnNormalImport(true)
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: []),
+            engine: engine,
+            defaults: makeDefaults(),
+            deferredImportRoot: stagingRoot
+        )
+
+        let requiresReplacement = await model.importPackage(packageURL)
+
+        try expect(!requiresReplacement, "an unmatched duplicate identity must not enable replacement")
+        try expect(model.pendingReplacement == nil, "an unmatched duplicate must not expose a destructive confirmation")
+        try expect(
+            model.operation == .failed("主题包与已安装主题身份不一致，已取消替换。"),
+            "identity mismatch must remain an actionable failure"
+        )
+        let stagedFiles = (try? FileManager.default.contentsOfDirectory(at: stagingRoot, includingPropertiesForKeys: nil)) ?? []
+        try expect(stagedFiles.isEmpty, "identity mismatch must delete the private staged snapshot")
+    }
+
+    @MainActor
+    private static func duplicateIdentityCatalogReadFailureFailsClosedAndDeletesSnapshot() async throws {
+        let temporary = try makeTemporaryDirectory(prefix: "duplicate-catalog-failure")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let packageURL = temporary.appendingPathComponent("duplicate.codexskin")
+        let stagingRoot = temporary.appendingPathComponent("store", isDirectory: true)
+        try Data("duplicate".utf8).write(to: packageURL)
+        let existing = makeThemeRecord(id: "duplicate", name: "Previously Loaded")
+        let catalog = FakeThemeCatalog(themes: [existing])
+        let engine = FakeEngine()
+        let model = AppModel(
+            catalog: catalog,
+            engine: engine,
+            defaults: makeDefaults(),
+            deferredImportRoot: stagingRoot
+        )
+        await model.refresh()
+        catalog.setLoadFailure(.engine("无法读取当前主题目录"))
+        await engine.setDuplicateOnNormalImport(true)
+
+        let requiresReplacement = await model.importPackage(packageURL)
+
+        try expect(!requiresReplacement, "catalog read failure must not reuse a stale installed identity")
+        try expect(model.pendingReplacement == nil, "catalog read failure must not expose destructive replacement")
+        try expect(model.operation == .failed("无法读取当前主题目录"), "catalog read failure must stay actionable")
+        let stagedFiles = (try? FileManager.default.contentsOfDirectory(at: stagingRoot, includingPropertiesForKeys: nil)) ?? []
+        try expect(stagedFiles.isEmpty, "catalog read failure must delete the private staged snapshot")
     }
 
     @MainActor
@@ -901,7 +1249,7 @@ enum AppModelTests {
         let engine = FakeEngine()
         await engine.setDuplicateOnNormalImport(true)
         let model = AppModel(
-            catalog: FakeThemeCatalog(themes: []),
+            catalog: FakeThemeCatalog(themes: [makeThemeRecord(id: "duplicate")]),
             engine: engine,
             defaults: makeDefaults(),
             deferredImportRoot: stagingRoot
@@ -967,6 +1315,38 @@ enum AppModelTests {
     }
 
     @MainActor
+    private static func pauseRejectsUnchangedStatus() async throws {
+        let engine = FakeEngine()
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
+
+        await model.pauseTheme()
+
+        try expect(
+            model.operation == .failed("暂停命令完成，但引擎仍未进入暂停状态。"),
+            "pause must fail when the refreshed session is unchanged"
+        )
+        try expect(model.retryAvailable, "an unverified pause must retain its typed retry intent")
+    }
+
+    @MainActor
+    private static func restartRejectsUnhealthyStatus() async throws {
+        let engine = FakeEngine()
+        await engine.setStatus(EngineStatus(
+            session: "live", port: 9341, injectorAlive: true,
+            cdpOk: false, codexRunning: true, themeName: "Current"
+        ))
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
+
+        await model.restartTheme()
+
+        try expect(
+            model.operation == .failed("重启命令完成，但 Codex、注入器或 CDP 未全部恢复健康。"),
+            "restart must fail unless every refreshed health signal is good"
+        )
+        try expect(model.retryAvailable, "an unhealthy restart must retain its typed retry intent")
+    }
+
+    @MainActor
     private static func pauseFailsWhenStatusRefreshFails() async throws {
         let engine = FakeEngine()
         await engine.setStatusFailure(.engine("暂停后状态读取失败"))
@@ -1003,7 +1383,9 @@ enum AppModelTests {
             defaults: makeDefaults()
         )
 
-        let first = Task { @MainActor in await model.apply(theme) }
+        await model.refresh()
+        model.selectTheme(theme)
+        let first = Task { @MainActor in await model.applySelectedTheme() }
         await engine.waitForSwitchStart()
         await model.pauseTheme()
         await model.restartTheme()
@@ -1026,7 +1408,9 @@ enum AppModelTests {
             defaults: makeDefaults()
         )
 
-        await model.apply(theme)
+        await model.refresh()
+        model.selectTheme(theme)
+        await model.applySelectedTheme()
 
         try expect(model.operation == .failed("可读错误"), "failure message must remain actionable")
     }

@@ -5,6 +5,7 @@ enum ThemeLibraryQueryTests {
         try searchesNameAndIDCaseInsensitively()
         try filtersAppearanceAndRecents()
         try sortsByNameAndRecentOrder()
+        try deduplicatesRecentIDsBeforeIndexing()
         try resolvesLibraryEmptyState()
         try resolvesRecentEmptyState()
         try resolvesFilteredEmptyState()
@@ -60,6 +61,14 @@ enum ThemeLibraryQueryTests {
         try expect(state.symbol == "shield.slash", "library-empty symbol mismatch")
         try expect(state.title == "没有找到已安装主题", "library-empty title mismatch")
         try expect(state.message == "导入 .codexskin 主题包以开始使用。", "library-empty message mismatch")
+    }
+
+    private static func deduplicatesRecentIDsBeforeIndexing() throws {
+        let first = makeThemeRecord(id: "first", name: "First")
+        let second = makeThemeRecord(id: "second", name: "Second")
+        let result = ThemeLibraryQuery(searchText: "", filter: .recent, sort: .recent)
+            .filtered(themes: [first, second], recentIDs: ["second", "second", "first"])
+        try expect(result.map(\.libraryID) == ["second", "first"], "duplicate recent IDs must retain first-seen ordering without trapping")
     }
 
     private static func resolvesRecentEmptyState() throws {
