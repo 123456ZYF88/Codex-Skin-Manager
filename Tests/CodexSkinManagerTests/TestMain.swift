@@ -7,6 +7,7 @@ enum CodexSkinManagerTestMain {
         do {
             try ThemeCatalogTests.run()
             try await EngineBridgeTests.run()
+            try ThemeLibraryQueryTests.run()
             try await AppModelTests.run()
             try await UICompileTests.run()
             print("PASS: all Codex Skin Manager tests")

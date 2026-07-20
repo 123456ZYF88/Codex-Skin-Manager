@@ -30,12 +30,12 @@ package struct MenuBarContentView: View {
                 if model.operation.isBusy { ProgressView().controlSize(.small) }
             }
 
-            if !model.recentThemes.isEmpty {
+            if !model.menuBarRecentThemes.isEmpty {
                 Divider()
                 Text("最近装备")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                ForEach(model.recentThemes) { theme in
+                ForEach(model.menuBarRecentThemes) { theme in
                     Button {
                         Task { await model.apply(theme) }
                     } label: {

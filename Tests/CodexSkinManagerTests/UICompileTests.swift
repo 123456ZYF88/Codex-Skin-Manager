@@ -7,20 +7,7 @@ enum UICompileTests {
         try sidebarUsesConcreteSelectionTags()
 
         await MainActor.run {
-            let directory = URL(fileURLWithPath: "/tmp/ui-theme", isDirectory: true)
-            let theme = ThemeRecord(
-                libraryID: "ui-theme",
-                manifest: ThemeManifest(
-                    schemaVersion: 1,
-                    id: "ui-theme",
-                    name: "UI Theme",
-                    image: "background.png",
-                    appearance: "dark"
-                ),
-                directoryURL: directory,
-                imageURL: directory.appendingPathComponent("background.png"),
-                isActive: false
-            )
+            let theme = makeThemeRecord(id: "ui-theme", name: "UI Theme")
             let model = AppModel(
                 catalog: FakeThemeCatalog(themes: [theme]),
                 engine: FakeEngine(),

@@ -1,3 +1,4 @@
+import CodexSkinManagerCore
 import Foundation
 
 struct TestFailure: Error, CustomStringConvertible {
@@ -13,4 +14,27 @@ func makeTemporaryDirectory(prefix: String) throws -> URL {
         .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+}
+
+func makeThemeRecord(
+    id: String,
+    name: String? = nil,
+    appearance: String? = "dark",
+    isActive: Bool = false
+) -> ThemeRecord {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("CodexSkinManagerTests-\(id)", isDirectory: true)
+    return ThemeRecord(
+        libraryID: id,
+        manifest: ThemeManifest(
+            schemaVersion: 1,
+            id: id,
+            name: name ?? id,
+            image: "background.png",
+            appearance: appearance
+        ),
+        directoryURL: directory,
+        imageURL: directory.appendingPathComponent("background.png"),
+        isActive: isActive
+    )
 }

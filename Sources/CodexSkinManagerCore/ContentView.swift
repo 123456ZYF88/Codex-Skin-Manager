@@ -5,15 +5,6 @@ package extension UTType {
     static let codexSkinPackage = UTType(exportedAs: "dev.codexskin.package", conformingTo: .zip)
 }
 
-private enum ManagerSection: String, CaseIterable, Identifiable {
-    case library
-    case recent
-
-    var id: String { rawValue }
-    var title: String { self == .library ? "主题武库" : "最近装备" }
-    var symbol: String { self == .library ? "shield.lefthalf.filled" : "clock.arrow.circlepath" }
-}
-
 package struct ContentView: View {
     @ObservedObject package var model: AppModel
     @State private var selectedSection: ManagerSection = .library

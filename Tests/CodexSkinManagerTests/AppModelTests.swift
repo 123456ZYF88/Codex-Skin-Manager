@@ -86,6 +86,8 @@ enum AppModelTests {
     @MainActor
     static func run() async throws {
         try await appliesThemeAndStoresRecent()
+        try await selectsInactiveThemeWithoutChangingActivity()
+        try await refreshFallsBackWhenSelectedThemeIsRemoved()
         try await ignoresSecondActionWhileBusy()
         try await duplicateImportExposesReplaceConfirmation()
         try await duplicateImportCanBeCancelled()
@@ -96,7 +98,12 @@ enum AppModelTests {
 
     @MainActor
     private static func appliesThemeAndStoresRecent() async throws {
-        let themes = [makeTheme(id: "one"), makeTheme(id: "two"), makeTheme(id: "three"), makeTheme(id: "four")]
+        let themes = [
+            makeThemeRecord(id: "one", name: "One"),
+            makeThemeRecord(id: "two", name: "Two"),
+            makeThemeRecord(id: "three", name: "Three"),
+            makeThemeRecord(id: "four", name: "Four"),
+        ]
         let engine = FakeEngine()
         let defaults = makeDefaults()
         let model = AppModel(catalog: FakeThemeCatalog(themes: themes), engine: engine, defaults: defaults)
@@ -109,12 +116,44 @@ enum AppModelTests {
         let snapshot = await engine.snapshot()
         try expect(snapshot.switchedIDs == ["one", "two", "three", "four"], "apply must use library ids")
         try expect(model.operation == .succeeded("已应用 Four"), "apply success message mismatch")
-        try expect(model.recentThemeIDs == ["four", "three", "two"], "recents must retain the last three ids")
+        try expect(model.recentThemeIDs == ["four", "three", "two", "one"], "recents must retain the last eight ids")
+    }
+
+    @MainActor
+    private static func selectsInactiveThemeWithoutChangingActivity() async throws {
+        let active = makeThemeRecord(id: "active", isActive: true)
+        let inactive = makeThemeRecord(id: "inactive")
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: [active, inactive]),
+            engine: FakeEngine(),
+            defaults: makeDefaults()
+        )
+
+        await model.refresh()
+        model.selectTheme(inactive)
+
+        try expect(model.selectedThemeID == "inactive", "selection must track the inspected theme")
+        try expect(model.themes.first(where: \.isActive)?.libraryID == "active", "selection must not change activity")
+    }
+
+    @MainActor
+    private static func refreshFallsBackWhenSelectedThemeIsRemoved() async throws {
+        let active = makeThemeRecord(id: "active", isActive: true)
+        let selected = makeThemeRecord(id: "selected")
+        let catalog = FakeThemeCatalog(themes: [active, selected])
+        let model = AppModel(catalog: catalog, engine: FakeEngine(), defaults: makeDefaults())
+
+        await model.refresh()
+        model.selectTheme(selected)
+        catalog.themes = [active]
+        await model.refresh()
+
+        try expect(model.selectedThemeID == "active", "refresh must fall back to the active theme")
     }
 
     @MainActor
     private static func ignoresSecondActionWhileBusy() async throws {
-        let theme = makeTheme(id: "blocked")
+        let theme = makeThemeRecord(id: "blocked")
         let engine = FakeEngine()
         await engine.setBlockSwitch(true)
         let model = AppModel(
@@ -177,7 +216,7 @@ enum AppModelTests {
 
     @MainActor
     private static func failuresBecomeActionableState() async throws {
-        let theme = makeTheme(id: "failure")
+        let theme = makeThemeRecord(id: "failure")
         let engine = FakeEngine()
         await engine.setSwitchFailure(.engine("可读错误"))
         let model = AppModel(
@@ -189,24 +228,6 @@ enum AppModelTests {
         await model.apply(theme)
 
         try expect(model.operation == .failed("可读错误"), "failure message must remain actionable")
-    }
-
-    private static func makeTheme(id: String) -> ThemeRecord {
-        let name = id.prefix(1).uppercased() + id.dropFirst()
-        let directory = URL(fileURLWithPath: "/tmp/\(id)", isDirectory: true)
-        return ThemeRecord(
-            libraryID: id,
-            manifest: ThemeManifest(
-                schemaVersion: 1,
-                id: id,
-                name: name,
-                image: "background.png",
-                appearance: "dark"
-            ),
-            directoryURL: directory,
-            imageURL: directory.appendingPathComponent("background.png"),
-            isActive: false
-        )
     }
 
     private static func makeDefaults() -> UserDefaults {
