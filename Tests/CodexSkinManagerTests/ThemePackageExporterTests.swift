@@ -1,3 +1,4 @@
+import Darwin
 import CodexSkinManagerCore
 import Foundation
 
@@ -37,6 +38,30 @@ actor ArchiveInflatingRunner: CommandRunning {
     }
 }
 
+actor ArchiveSameSizeMutatingRunner: CommandRunning {
+    private var requestCount = 0
+
+    func run(_ request: CommandRequest) async throws -> CommandResult {
+        let result = try await ProcessRunner().run(request)
+        requestCount += 1
+        if requestCount == 2 {
+            let archive = URL(fileURLWithPath: request.arguments[1])
+            let descriptor = Darwin.open(archive.path, O_WRONLY | O_CLOEXEC)
+            guard descriptor >= 0 else {
+                throw TestFailure(description: "same-size archive mutation fixture could not open archive")
+            }
+            defer { Darwin.close(descriptor) }
+            var replacement: UInt8 = 0
+            guard Darwin.pwrite(descriptor, &replacement, 1, 0) == 1,
+                  Darwin.fsync(descriptor) == 0
+            else {
+                throw TestFailure(description: "same-size archive mutation fixture could not overwrite archive")
+            }
+        }
+        return result
+    }
+}
+
 struct SourceSwappingFileOperations: ExportFileOperating {
     let replacement: URL
     private let base = POSIXExportFileOperations()
@@ -47,8 +72,17 @@ struct SourceSwappingFileOperations: ExportFileOperating {
         try base.snapshotSource(at: source, to: destination, maximumBytes: maximumBytes)
     }
 
-    func publishArchive(at source: URL, to destination: URL) throws {
-        try base.publishArchive(at: source, to: destination)
+    func archiveDigest(at source: URL, maximumBytes: Int64) throws -> Data {
+        try base.archiveDigest(at: source, maximumBytes: maximumBytes)
+    }
+
+    func publishArchive(at source: URL, to destination: URL, expectedDigest: Data, maximumBytes: Int64) throws {
+        try base.publishArchive(
+            at: source,
+            to: destination,
+            expectedDigest: expectedDigest,
+            maximumBytes: maximumBytes
+        )
     }
 }
 
@@ -62,8 +96,17 @@ struct SourceGrowingFileOperations: ExportFileOperating {
         try base.snapshotSource(at: source, to: destination, maximumBytes: maximumBytes)
     }
 
-    func publishArchive(at source: URL, to destination: URL) throws {
-        try base.publishArchive(at: source, to: destination)
+    func archiveDigest(at source: URL, maximumBytes: Int64) throws -> Data {
+        try base.archiveDigest(at: source, maximumBytes: maximumBytes)
+    }
+
+    func publishArchive(at source: URL, to destination: URL, expectedDigest: Data, maximumBytes: Int64) throws {
+        try base.publishArchive(
+            at: source,
+            to: destination,
+            expectedDigest: expectedDigest,
+            maximumBytes: maximumBytes
+        )
     }
 }
 
@@ -75,9 +118,18 @@ struct PublicationSymlinkSwapFileOperations: ExportFileOperating {
         try base.snapshotSource(at: source, to: destination, maximumBytes: maximumBytes)
     }
 
-    func publishArchive(at source: URL, to destination: URL) throws {
+    func archiveDigest(at source: URL, maximumBytes: Int64) throws -> Data {
+        try base.archiveDigest(at: source, maximumBytes: maximumBytes)
+    }
+
+    func publishArchive(at source: URL, to destination: URL, expectedDigest: Data, maximumBytes: Int64) throws {
         try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: protectedTarget)
-        try base.publishArchive(at: source, to: destination)
+        try base.publishArchive(
+            at: source,
+            to: destination,
+            expectedDigest: expectedDigest,
+            maximumBytes: maximumBytes
+        )
     }
 }
 
@@ -88,11 +140,20 @@ struct ArchiveGrowingAtPublicationFileOperations: ExportFileOperating {
         try base.snapshotSource(at: source, to: destination, maximumBytes: maximumBytes)
     }
 
-    func publishArchive(at source: URL, to destination: URL) throws {
+    func archiveDigest(at source: URL, maximumBytes: Int64) throws -> Data {
+        try base.archiveDigest(at: source, maximumBytes: maximumBytes)
+    }
+
+    func publishArchive(at source: URL, to destination: URL, expectedDigest: Data, maximumBytes: Int64) throws {
         let handle = try FileHandle(forWritingTo: source)
         try handle.truncate(atOffset: 20 * 1_024 * 1_024 + 1)
         try handle.close()
-        try base.publishArchive(at: source, to: destination)
+        try base.publishArchive(
+            at: source,
+            to: destination,
+            expectedDigest: expectedDigest,
+            maximumBytes: maximumBytes
+        )
     }
 }
 
@@ -112,9 +173,97 @@ enum ThemePackageExporterTests {
         try await rejectsOversizedArchiveBeforePublication()
         try await rejectsSourceSwappedToSymlinkAtSnapshotBoundary()
         try await rejectsSourceGrowthAtSnapshotBoundary()
+        try await rejectsSameSizeSourceMutationDuringSnapshot()
+        try await rejectsSameSizeArchiveMutationAfterReadback()
         try await rejectsArchiveGrowthAtPublicationBoundary()
         try await safelyReplacesSymlinkIntroducedInsidePublicationWindow()
+        try await rejectsStagedEntryReplacementBeforeRename()
         print("PASS: ThemePackageExporterTests")
+    }
+
+    private static func rejectsSameSizeSourceMutationDuringSnapshot() async throws {
+        let root = try makeTemporaryDirectory(prefix: "exporter-source-same-size-mutation")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let theme = try writeExportTheme(in: root, id: "source-same-size-mutation")
+        let operations = POSIXExportFileOperations(didInspectSource: { source in
+            let descriptor = Darwin.open(source.path, O_WRONLY | O_CLOEXEC)
+            guard descriptor >= 0 else {
+                throw TestFailure(description: "same-size source mutation fixture could not open source")
+            }
+            defer { Darwin.close(descriptor) }
+            var replacement: UInt8 = 0
+            guard Darwin.pwrite(descriptor, &replacement, 1, 0) == 1,
+                  Darwin.fsync(descriptor) == 0
+            else {
+                throw TestFailure(description: "same-size source mutation fixture could not overwrite source")
+            }
+        })
+
+        do {
+            _ = try await ThemePackageExporter(fileOperations: operations).export(
+                theme: theme,
+                to: root.appendingPathComponent("source-same-size-mutation.codexskin")
+            )
+            throw TestFailure(description: "same-size source mutation must be rejected")
+        } catch ManagerError.invalidPackage(let message) {
+            try expect(message.contains("发生了变化"), "same-size source mutation rejection must be actionable")
+        }
+    }
+
+    private static func rejectsSameSizeArchiveMutationAfterReadback() async throws {
+        let root = try makeTemporaryDirectory(prefix: "exporter-archive-same-size-mutation")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let theme = try writeExportTheme(in: root, id: "archive-same-size-mutation")
+        let destination = root.appendingPathComponent("archive-same-size-mutation.codexskin")
+
+        do {
+            _ = try await ThemePackageExporter(runner: ArchiveSameSizeMutatingRunner()).export(
+                theme: theme,
+                to: destination
+            )
+            throw TestFailure(description: "same-size archive mutation after readback must be rejected")
+        } catch ManagerError.invalidPackage(let message) {
+            try expect(message.contains("发生了变化"), "same-size archive mutation rejection must be actionable")
+        }
+        try expect(!FileManager.default.fileExists(atPath: destination.path), "mutated archive must not publish")
+    }
+
+    private static func rejectsStagedEntryReplacementBeforeRename() async throws {
+        let root = try makeTemporaryDirectory(prefix: "exporter-staged-entry-replacement")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let theme = try writeExportTheme(in: root, id: "staged-entry-replacement")
+        let destination = root.appendingPathComponent("staged-entry-replacement.codexskin")
+        let protectedTarget = root.appendingPathComponent("protected-target.codexskin")
+        let destinationSentinel = Data("destination must remain unchanged".utf8)
+        let protectedSentinel = Data("target must remain unchanged".utf8)
+        try destinationSentinel.write(to: destination)
+        try protectedSentinel.write(to: protectedTarget)
+        let operations = POSIXExportFileOperations(beforePublicationIdentityCheck: { directoryFD, entryName in
+            guard Darwin.unlinkat(directoryFD, entryName, 0) == 0,
+                  Darwin.symlinkat(protectedTarget.path, directoryFD, entryName) == 0
+            else {
+                throw TestFailure(description: "staged entry replacement fixture could not replace pathname")
+            }
+        })
+
+        do {
+            _ = try await ThemePackageExporter(fileOperations: operations).export(
+                theme: theme,
+                to: destination
+            )
+            throw TestFailure(description: "replaced staged entry must be rejected")
+        } catch ManagerError.invalidPackage(let message) {
+            try expect(message.contains("身份"), "staged entry replacement rejection must be actionable")
+        }
+        let destinationContents = try Data(contentsOf: destination)
+        let protectedContents = try Data(contentsOf: protectedTarget)
+        let remainingEntries = try FileManager.default.contentsOfDirectory(atPath: root.path)
+        try expect(destinationContents == destinationSentinel, "destination must remain unchanged")
+        try expect(protectedContents == protectedSentinel, "protected target must remain unchanged")
+        try expect(
+            !remainingEntries.contains(where: { $0.hasPrefix(".codexskin-export-") }),
+            "rejected publication must clean only its private staging directory"
+        )
     }
 
     private static func rejectsSourceSwappedToSymlinkAtSnapshotBoundary() async throws {

@@ -77,6 +77,12 @@ package struct ThemePackageExporter: ThemePackageExporting, Sendable {
             throw ManagerError.invalidPackage("无法创建主题包。")
         }
 
+        let maximumArchiveBytes = Int64(20 * 1_024 * 1_024)
+        let validatedDigest = try fileOperations.archiveDigest(
+            at: archiveURL,
+            maximumBytes: maximumArchiveBytes
+        )
+
         let list = try await runner.run(CommandRequest(
             executable: URL(fileURLWithPath: "/usr/bin/unzip"),
             arguments: ["-Z1", archiveURL.path],
@@ -90,23 +96,24 @@ package struct ThemePackageExporter: ThemePackageExporting, Sendable {
             throw ManagerError.invalidPackage("导出的主题包结构无效。")
         }
 
-        let archiveValues = try archiveURL.resourceValues(
-            forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
+        let readbackDigest = try fileOperations.archiveDigest(
+            at: archiveURL,
+            maximumBytes: maximumArchiveBytes
         )
-        guard archiveValues.isRegularFile == true,
-              archiveValues.isSymbolicLink != true,
-              let archiveBytes = archiveValues.fileSize,
-              archiveBytes > 0,
-              archiveBytes <= 20 * 1_024 * 1_024
-        else {
-            throw ManagerError.invalidPackage("导出的主题包不得超过 20 MB。")
+        guard readbackDigest == validatedDigest else {
+            throw ManagerError.invalidPackage("导出的主题包在结构验证后发生了变化。")
         }
 
         // Recheck immediately before publication because ZIP creation leaves time for the target to change.
         if (try? fileManager.destinationOfSymbolicLink(atPath: destination.path)) != nil {
             throw ManagerError.invalidPackage("导出目标不能是符号链接。")
         }
-        try fileOperations.publishArchive(at: archiveURL, to: destination)
+        try fileOperations.publishArchive(
+            at: archiveURL,
+            to: destination,
+            expectedDigest: validatedDigest,
+            maximumBytes: maximumArchiveBytes
+        )
         return destination
     }
 
