@@ -56,6 +56,8 @@ actor FakeEngine: EngineControlling {
     private(set) var switchedIDs: [String] = []
     private(set) var imports: [(URL, Bool)] = []
     private(set) var restoreCount = 0
+    private(set) var pauseCount = 0
+    private(set) var restartCount = 0
     var duplicateOnNormalImport = false
     var switchFailure: ManagerError?
     var blockSwitch = false
@@ -118,6 +120,14 @@ actor FakeEngine: EngineControlling {
         restoreCount += 1
     }
 
+    func pauseTheme() async throws {
+        pauseCount += 1
+    }
+
+    func restartTheme() async throws {
+        restartCount += 1
+    }
+
     func setDuplicateOnNormalImport(_ value: Bool) { duplicateOnNormalImport = value }
     func setSwitchFailure(_ error: ManagerError?) { switchFailure = error }
     func setBlockSwitch(_ value: Bool) { blockSwitch = value }
@@ -133,8 +143,14 @@ actor FakeEngine: EngineControlling {
         switchRelease = nil
     }
 
-    func snapshot() -> (switchedIDs: [String], importReplaceFlags: [Bool], restoreCount: Int) {
-        (switchedIDs, imports.map(\.1), restoreCount)
+    func snapshot() -> (
+        switchedIDs: [String],
+        importReplaceFlags: [Bool],
+        restoreCount: Int,
+        pauseCount: Int,
+        restartCount: Int
+    ) {
+        (switchedIDs, imports.map(\.1), restoreCount, pauseCount, restartCount)
     }
 }
 
@@ -152,6 +168,9 @@ enum AppModelTests {
         try await duplicateImportExposesReplaceConfirmation()
         try await duplicateImportCanBeCancelled()
         try await restoreCallsOnlyRestoreCommand()
+        try await pauseRefreshesStatus()
+        try await restartRefreshesStatus()
+        try await busySwitchBlocksPauseAndRestart()
         try await failuresBecomeActionableState()
         print("PASS: AppModelTests")
     }
@@ -344,6 +363,65 @@ enum AppModelTests {
         try expect(snapshot.switchedIDs.isEmpty, "restore must not switch a theme")
         try expect(snapshot.importReplaceFlags.isEmpty, "restore must not import")
         try expect(model.operation == .succeeded("已恢复 Codex 原版界面"), "restore success message mismatch")
+    }
+
+    @MainActor
+    private static func pauseRefreshesStatus() async throws {
+        let engine = FakeEngine()
+        let expectedStatus = EngineStatus(
+            session: "paused", port: 9341, injectorAlive: false,
+            cdpOk: false, codexRunning: true, themeName: ""
+        )
+        await engine.setStatus(expectedStatus)
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
+
+        await model.pauseTheme()
+
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.pauseCount == 1, "pause must call the lifecycle command exactly once")
+        try expect(model.status == expectedStatus, "pause must refresh engine status")
+        try expect(model.operation == .succeeded("主题已暂停"), "pause success message mismatch")
+    }
+
+    @MainActor
+    private static func restartRefreshesStatus() async throws {
+        let engine = FakeEngine()
+        let expectedStatus = EngineStatus(
+            session: "live", port: 9341, injectorAlive: true,
+            cdpOk: true, codexRunning: true, themeName: "Current"
+        )
+        await engine.setStatus(expectedStatus)
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
+
+        await model.restartTheme()
+
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.restartCount == 1, "restart must call the lifecycle command exactly once")
+        try expect(model.status == expectedStatus, "restart must refresh engine status")
+        try expect(model.operation == .succeeded("Codex 已重新启动并应用主题"), "restart success message mismatch")
+    }
+
+    @MainActor
+    private static func busySwitchBlocksPauseAndRestart() async throws {
+        let theme = makeThemeRecord(id: "lifecycle-blocked")
+        let engine = FakeEngine()
+        await engine.setBlockSwitch(true)
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: [theme]),
+            engine: engine,
+            defaults: makeDefaults()
+        )
+
+        let first = Task { @MainActor in await model.apply(theme) }
+        await engine.waitForSwitchStart()
+        await model.pauseTheme()
+        await model.restartTheme()
+
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.pauseCount == 0, "pause must be ignored while switching")
+        try expect(snapshot.restartCount == 0, "restart must be ignored while switching")
+        await engine.releaseSwitch()
+        await first.value
     }
 
     @MainActor

@@ -43,6 +43,8 @@ enum EngineBridgeTests {
             CommandResult(exitCode: 0, stdout: importJSON, stderr: ""),
             CommandResult(exitCode: 0, stdout: importJSON, stderr: ""),
             CommandResult(exitCode: 0, stdout: "", stderr: ""),
+            CommandResult(exitCode: 0, stdout: "", stderr: ""),
+            CommandResult(exitCode: 0, stdout: "", stderr: ""),
         ])
         let engineRoot = URL(fileURLWithPath: "/tmp/fake-engine", isDirectory: true)
         let bridge = EngineBridge(engineRoot: engineRoot, runner: runner)
@@ -53,10 +55,12 @@ enum EngineBridgeTests {
         _ = try await bridge.importTheme(packageURL: packageURL, replace: false)
         _ = try await bridge.importTheme(packageURL: packageURL, replace: true)
         try await bridge.restoreOriginal()
+        try await bridge.pauseTheme()
+        try await bridge.restartTheme()
 
         let requests = await runner.recordedRequests()
         try expect(status.themeName == "Current", "status JSON must decode")
-        try expect(requests.count == 5, "bridge must issue five commands")
+        try expect(requests.count == 7, "bridge must issue seven commands")
         try expect(requests[0].executable.lastPathComponent == "status-dream-skin-macos.sh", "status script mismatch")
         try expect(requests[0].arguments == ["--json", "--deep"], "status arguments mismatch")
         try expect(requests[1].executable.lastPathComponent == "switch-theme-macos.sh", "switch script mismatch")
@@ -65,6 +69,10 @@ enum EngineBridgeTests {
         try expect(requests[3].arguments == ["--file", packageURL.path, "--replace", "--json"], "replace arguments mismatch")
         try expect(requests[4].executable.lastPathComponent == "restore-dream-skin-macos.sh", "restore script mismatch")
         try expect(requests[4].arguments == ["--restore-base-theme", "--restart-codex"], "restore must request full original UI and restart")
+        try expect(requests[5].executable.lastPathComponent == "pause-dream-skin-macos.sh", "pause script mismatch")
+        try expect(requests[5].arguments.isEmpty, "pause must not interpolate arguments")
+        try expect(requests[6].executable.lastPathComponent == "restart-dream-skin-macos.sh", "restart script mismatch")
+        try expect(requests[6].arguments.isEmpty, "restart must not interpolate arguments")
     }
 
     private static func mapsDuplicateImportToTypedError() async throws {

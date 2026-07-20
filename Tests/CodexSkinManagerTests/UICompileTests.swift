@@ -59,6 +59,11 @@ enum UICompileTests {
             buildScript.contains("Resources/AppIcon.icns"),
             "The app bundler must copy AppIcon.icns"
         )
+        try expect(
+            buildScript.contains("import-theme-pack-macos.sh")
+                && buildScript.contains("restart-dream-skin-macos.sh"),
+            "The app bundler must copy the trusted importer and restart extensions"
+        )
     }
 
     private static func sidebarUsesConcreteSelectionTags() throws {

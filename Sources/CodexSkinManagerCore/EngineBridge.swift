@@ -36,6 +36,8 @@ package protocol EngineControlling: Sendable {
     func switchTheme(libraryID: String) async throws
     func importTheme(packageURL: URL, replace: Bool) async throws -> ThemeImportResult
     func restoreOriginal() async throws
+    func pauseTheme() async throws
+    func restartTheme() async throws
 }
 
 package struct EngineBridge: EngineControlling, Sendable {
@@ -99,6 +101,24 @@ package struct EngineBridge: EngineControlling, Sendable {
         let result = try await runScript(
             named: "restore-dream-skin-macos.sh",
             arguments: ["--restore-base-theme", "--restart-codex"],
+            timeout: 90
+        )
+        try requireSuccess(result)
+    }
+
+    package func pauseTheme() async throws {
+        let result = try await runScript(
+            named: "pause-dream-skin-macos.sh",
+            arguments: [],
+            timeout: 30
+        )
+        try requireSuccess(result)
+    }
+
+    package func restartTheme() async throws {
+        let result = try await runScript(
+            named: "restart-dream-skin-macos.sh",
+            arguments: [],
             timeout: 90
         )
         try requireSuccess(result)

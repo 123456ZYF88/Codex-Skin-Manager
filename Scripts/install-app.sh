@@ -50,14 +50,16 @@ if [ -e "$BACKUP_APP" ]; then /bin/rm -rf "$BACKUP_APP"; fi
 
 ENGINE_ROOT="${CODEX_DREAM_SKIN_ENGINE:-$HOME/.codex/codex-dream-skin-studio}"
 ENGINE_SCRIPTS="$ENGINE_ROOT/scripts"
-IMPORT_SOURCE="$PROJECT_ROOT/EngineExtension/import-theme-pack-macos.sh"
 if [ -f "$ENGINE_SCRIPTS/common-macos.sh" ] \
   && [ -f "$ENGINE_SCRIPTS/stage-theme.mjs" ] \
   && [ -f "$ENGINE_SCRIPTS/injector.mjs" ]; then
-  IMPORT_TEMP="$ENGINE_SCRIPTS/.import-theme-pack-macos.sh.$$"
-  /usr/bin/install -m 700 "$IMPORT_SOURCE" "$IMPORT_TEMP"
-  /bin/mv -f "$IMPORT_TEMP" "$ENGINE_SCRIPTS/import-theme-pack-macos.sh"
-  /usr/bin/printf 'Installed theme importer: %s\n' "$ENGINE_SCRIPTS/import-theme-pack-macos.sh"
+  for extension in import-theme-pack-macos.sh restart-dream-skin-macos.sh; do
+    EXTENSION_SOURCE="$PROJECT_ROOT/EngineExtension/$extension"
+    EXTENSION_TEMP="$ENGINE_SCRIPTS/.$extension.$$"
+    /usr/bin/install -m 700 "$EXTENSION_SOURCE" "$EXTENSION_TEMP"
+    /bin/mv -f "$EXTENSION_TEMP" "$ENGINE_SCRIPTS/$extension"
+    /usr/bin/printf 'Installed engine extension: %s\n' "$ENGINE_SCRIPTS/$extension"
+  done
 else
   /usr/bin/printf 'Warning: Dream Skin engine not found at %s; importing is unavailable until it is installed.\n' \
     "$ENGINE_ROOT" >&2

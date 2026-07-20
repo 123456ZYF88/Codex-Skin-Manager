@@ -212,6 +212,8 @@ package struct ContentView: View {
         case .switching: "正在装备主题；热切换失败时会自动重启 Codex…"
         case .importing: "正在安全导入主题包…"
         case .restoring: "正在恢复原版界面并重启 Codex…"
+        case .pausing: "正在暂停主题…"
+        case .restarting: "正在重启 Codex 并应用主题…"
         case .succeeded(let message), .failed(let message): message
         }
     }
@@ -223,6 +225,8 @@ package struct ContentView: View {
         case .switching: "shield.lefthalf.filled"
         case .importing, .validating: "square.and.arrow.down"
         case .restoring: "arrow.counterclockwise.circle.fill"
+        case .pausing: "pause.circle.fill"
+        case .restarting: "arrow.clockwise.circle.fill"
         case .idle: "snowflake"
         }
     }

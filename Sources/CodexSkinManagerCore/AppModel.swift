@@ -7,12 +7,14 @@ package enum ManagerOperation: Equatable, Sendable {
     case switching
     case importing
     case restoring
+    case pausing
+    case restarting
     case succeeded(String)
     case failed(String)
 
     package var isBusy: Bool {
         switch self {
-        case .validating, .switching, .importing, .restoring: true
+        case .validating, .switching, .importing, .restoring, .pausing, .restarting: true
         case .idle, .succeeded, .failed: false
         }
     }
@@ -166,6 +168,30 @@ package final class AppModel: ObservableObject {
             try await engine.restoreOriginal()
             try await reloadState()
             operation = .succeeded("已恢复 Codex 原版界面")
+        } catch {
+            operation = .failed(message(for: error))
+        }
+    }
+
+    package func pauseTheme() async {
+        guard !operation.isBusy else { return }
+        operation = .pausing
+        do {
+            try await engine.pauseTheme()
+            try await reloadState()
+            operation = .succeeded("主题已暂停")
+        } catch {
+            operation = .failed(message(for: error))
+        }
+    }
+
+    package func restartTheme() async {
+        guard !operation.isBusy else { return }
+        operation = .restarting
+        do {
+            try await engine.restartTheme()
+            try await reloadState()
+            operation = .succeeded("Codex 已重新启动并应用主题")
         } catch {
             operation = .failed(message(for: error))
         }
