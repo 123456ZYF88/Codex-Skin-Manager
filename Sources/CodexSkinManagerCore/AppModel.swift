@@ -25,6 +25,7 @@ package final class AppModel: ObservableObject {
     @Published package private(set) var operation: ManagerOperation = .idle
     @Published package private(set) var recentThemeIDs: [String]
     @Published package private(set) var pendingReplacementURL: URL?
+    @Published package private(set) var pendingRestartThemeID: String?
     @Published package var selectedSection: ManagerSection = .dashboard
     @Published package var selectedThemeID: String?
     @Published package var searchText = ""
@@ -96,11 +97,43 @@ package final class AppModel: ObservableObject {
 
     package func apply(_ theme: ThemeRecord) async {
         guard !operation.isBusy else { return }
+        let current = (try? await engine.status()) ?? status
+        status = current
+        if current?.codexRunning == true && current?.cdpOk != true {
+            pendingRestartThemeID = theme.libraryID
+            operation = .idle
+            return
+        }
+        await performApply(theme)
+    }
+
+    package func confirmPendingRestartApply() async {
+        guard !operation.isBusy,
+              let id = pendingRestartThemeID,
+              let theme = themes.first(where: { $0.libraryID == id })
+        else { return }
+        pendingRestartThemeID = nil
+        await performApply(theme)
+    }
+
+    package func cancelPendingRestartApply() {
+        guard !operation.isBusy else { return }
+        pendingRestartThemeID = nil
+    }
+
+    private func performApply(_ theme: ThemeRecord) async {
         operation = .switching
         do {
             try await engine.switchTheme(libraryID: theme.libraryID)
             try await reloadState()
+            guard status?.injectorAlive == true,
+                  status?.cdpOk == true,
+                  themes.first(where: { $0.libraryID == theme.libraryID })?.isActive == true
+            else {
+                throw ManagerError.invalidResponse("主题切换完成，但未验证到目标主题。")
+            }
             recordRecent(theme.libraryID)
+            selectedThemeID = theme.libraryID
             operation = .succeeded("已应用 \(theme.manifest.name)")
         } catch {
             operation = .failed(message(for: error))

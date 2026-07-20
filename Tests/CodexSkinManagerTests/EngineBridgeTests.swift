@@ -58,7 +58,7 @@ enum EngineBridgeTests {
         try expect(status.themeName == "Current", "status JSON must decode")
         try expect(requests.count == 5, "bridge must issue five commands")
         try expect(requests[0].executable.lastPathComponent == "status-dream-skin-macos.sh", "status script mismatch")
-        try expect(requests[0].arguments == ["--json"], "status arguments mismatch")
+        try expect(requests[0].arguments == ["--json", "--deep"], "status arguments mismatch")
         try expect(requests[1].executable.lastPathComponent == "switch-theme-macos.sh", "switch script mismatch")
         try expect(requests[1].arguments == ["--id", "preset-midnight-aurora;literal"], "theme id must stay one argument")
         try expect(requests[2].arguments == ["--file", packageURL.path, "--json"], "import arguments mismatch")

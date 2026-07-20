@@ -2,14 +2,54 @@ import CodexSkinManagerCore
 import Foundation
 
 final class FakeThemeCatalog: ThemeCatalogReading, @unchecked Sendable {
-    var themes: [ThemeRecord]
+    private let lock = NSLock()
+    private var storedThemes: [ThemeRecord]
+    private var activeLibraryID: String?
 
     init(themes: [ThemeRecord]) {
-        self.themes = themes
+        storedThemes = themes
+        activeLibraryID = themes.first(where: \.isActive)?.libraryID
     }
 
-    func loadThemes() throws -> [ThemeRecord] { themes }
-    func loadActiveTheme() -> ThemeManifest? { themes.first(where: \.isActive)?.manifest }
+    var themes: [ThemeRecord] {
+        get { loadThemesForTest() }
+        set { replaceThemes(newValue) }
+    }
+
+    func loadThemes() throws -> [ThemeRecord] { loadThemesForTest() }
+
+    func loadActiveTheme() -> ThemeManifest? {
+        loadThemesForTest().first(where: \.isActive)?.manifest
+    }
+
+    func setActiveLibraryID(_ id: String?) {
+        lock.lock()
+        activeLibraryID = id
+        lock.unlock()
+    }
+
+    private func loadThemesForTest() -> [ThemeRecord] {
+        lock.lock()
+        let activeID = activeLibraryID
+        let themes = storedThemes
+        lock.unlock()
+        return themes.map { theme in
+            ThemeRecord(
+                libraryID: theme.libraryID,
+                manifest: theme.manifest,
+                directoryURL: theme.directoryURL,
+                imageURL: theme.imageURL,
+                isActive: theme.libraryID == activeID
+            )
+        }
+    }
+
+    private func replaceThemes(_ themes: [ThemeRecord]) {
+        lock.lock()
+        storedThemes = themes
+        activeLibraryID = themes.first(where: \.isActive)?.libraryID
+        lock.unlock()
+    }
 }
 
 actor FakeEngine: EngineControlling {
@@ -19,19 +59,25 @@ actor FakeEngine: EngineControlling {
     var duplicateOnNormalImport = false
     var switchFailure: ManagerError?
     var blockSwitch = false
+    private var engineStatus = EngineStatus(
+        session: "live",
+        port: 9341,
+        injectorAlive: true,
+        cdpOk: true,
+        codexRunning: true,
+        themeName: "Current"
+    )
+    private let onSwitch: @Sendable (String) -> Void
     private var switchStarted = false
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
     private var switchRelease: CheckedContinuation<Void, Never>?
 
+    init(onSwitch: @escaping @Sendable (String) -> Void = { _ in }) {
+        self.onSwitch = onSwitch
+    }
+
     func status() async throws -> EngineStatus {
-        EngineStatus(
-            session: "live",
-            port: 9341,
-            injectorAlive: true,
-            cdpOk: true,
-            codexRunning: true,
-            themeName: "Current"
-        )
+        engineStatus
     }
 
     func switchTheme(libraryID: String) async throws {
@@ -43,6 +89,15 @@ actor FakeEngine: EngineControlling {
             await withCheckedContinuation { switchRelease = $0 }
         }
         if let switchFailure { throw switchFailure }
+        engineStatus = EngineStatus(
+            session: "live",
+            port: 9341,
+            injectorAlive: true,
+            cdpOk: true,
+            codexRunning: true,
+            themeName: libraryID
+        )
+        onSwitch(libraryID)
     }
 
     func importTheme(packageURL: URL, replace: Bool) async throws -> ThemeImportResult {
@@ -66,6 +121,7 @@ actor FakeEngine: EngineControlling {
     func setDuplicateOnNormalImport(_ value: Bool) { duplicateOnNormalImport = value }
     func setSwitchFailure(_ error: ManagerError?) { switchFailure = error }
     func setBlockSwitch(_ value: Bool) { blockSwitch = value }
+    func setStatus(_ status: EngineStatus) { engineStatus = status }
 
     func waitForSwitchStart() async {
         if switchStarted { return }
@@ -86,6 +142,10 @@ enum AppModelTests {
     @MainActor
     static func run() async throws {
         try await appliesThemeAndStoresRecent()
+        try await runningWithoutCDPRequiresConsent()
+        try await applyRequiresVerifiedTarget()
+        try await pendingRestartApplyCanBeCancelled()
+        try await confirmPendingRestartApplyVerifiesAndRecordsTheme()
         try await selectsInactiveThemeWithoutChangingActivity()
         try await refreshFallsBackWhenSelectedThemeIsRemoved()
         try await ignoresSecondActionWhileBusy()
@@ -104,9 +164,10 @@ enum AppModelTests {
             makeThemeRecord(id: "three", name: "Three"),
             makeThemeRecord(id: "four", name: "Four"),
         ]
-        let engine = FakeEngine()
+        let catalog = FakeThemeCatalog(themes: themes)
+        let engine = FakeEngine(onSwitch: { id in catalog.setActiveLibraryID(id) })
         let defaults = makeDefaults()
-        let model = AppModel(catalog: FakeThemeCatalog(themes: themes), engine: engine, defaults: defaults)
+        let model = AppModel(catalog: catalog, engine: engine, defaults: defaults)
 
         try expect(model.operation == .idle, "model must start idle")
         for theme in themes {
@@ -117,6 +178,77 @@ enum AppModelTests {
         try expect(snapshot.switchedIDs == ["one", "two", "three", "four"], "apply must use library ids")
         try expect(model.operation == .succeeded("已应用 Four"), "apply success message mismatch")
         try expect(model.recentThemeIDs == ["four", "three", "two", "one"], "recents must retain the last eight ids")
+    }
+
+    @MainActor
+    private static func runningWithoutCDPRequiresConsent() async throws {
+        let catalog = FakeThemeCatalog(themes: [makeThemeRecord(id: "cold", name: "Cold")])
+        let engine = FakeEngine()
+        await engine.setStatus(EngineStatus(
+            session: "off", port: 9341, injectorAlive: false,
+            cdpOk: false, codexRunning: true, themeName: ""
+        ))
+        let model = AppModel(catalog: catalog, engine: engine, defaults: makeDefaults())
+        await model.refresh()
+        await model.apply(catalog.themes[0])
+        try expect(model.pendingRestartThemeID == "cold", "restart consent must retain the theme id")
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.switchedIDs.isEmpty, "theme must not switch before consent")
+    }
+
+    @MainActor
+    private static func applyRequiresVerifiedTarget() async throws {
+        let theme = makeThemeRecord(id: "target", name: "Target")
+        let catalog = FakeThemeCatalog(themes: [theme])
+        let engine = FakeEngine(onSwitch: { _ in })
+        let model = AppModel(catalog: catalog, engine: engine, defaults: makeDefaults())
+        await model.refresh()
+        await model.apply(theme)
+        try expect(model.operation == .failed("主题切换完成，但未验证到目标主题。"), "unverified apply must fail")
+    }
+
+    @MainActor
+    private static func pendingRestartApplyCanBeCancelled() async throws {
+        let theme = makeThemeRecord(id: "cancel", name: "Cancel")
+        let engine = FakeEngine()
+        await engine.setStatus(EngineStatus(
+            session: "off", port: 9341, injectorAlive: false,
+            cdpOk: false, codexRunning: true, themeName: ""
+        ))
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: [theme]),
+            engine: engine,
+            defaults: makeDefaults()
+        )
+
+        await model.apply(theme)
+        model.cancelPendingRestartApply()
+
+        try expect(model.pendingRestartThemeID == nil, "cancel must clear restart consent")
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.switchedIDs.isEmpty, "cancel must leave the engine untouched")
+    }
+
+    @MainActor
+    private static func confirmPendingRestartApplyVerifiesAndRecordsTheme() async throws {
+        let theme = makeThemeRecord(id: "confirmed", name: "Confirmed")
+        let catalog = FakeThemeCatalog(themes: [theme])
+        let engine = FakeEngine(onSwitch: { id in catalog.setActiveLibraryID(id) })
+        await engine.setStatus(EngineStatus(
+            session: "off", port: 9341, injectorAlive: false,
+            cdpOk: false, codexRunning: true, themeName: ""
+        ))
+        let model = AppModel(catalog: catalog, engine: engine, defaults: makeDefaults())
+
+        await model.refresh()
+        await model.apply(theme)
+        await model.confirmPendingRestartApply()
+
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.switchedIDs == ["confirmed"], "confirmation must switch exactly once")
+        try expect(model.themes.first(where: { $0.libraryID == "confirmed" })?.isActive == true, "confirmation must verify the target is active")
+        try expect(model.recentThemeIDs == ["confirmed"], "confirmation must record the target as recent")
+        try expect(model.pendingRestartThemeID == nil, "confirmation must clear restart consent")
     }
 
     @MainActor

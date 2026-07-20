@@ -50,7 +50,7 @@ package struct EngineBridge: EngineControlling, Sendable {
     package func status() async throws -> EngineStatus {
         let result = try await runScript(
             named: "status-dream-skin-macos.sh",
-            arguments: ["--json"],
+            arguments: ["--json", "--deep"],
             timeout: 8
         )
         try requireSuccess(result)
