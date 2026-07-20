@@ -241,6 +241,8 @@ enum AppModelTests {
         try await selectsInactiveThemeWithoutChangingActivity()
         try await refreshFallsBackWhenSelectedThemeIsRemoved()
         try await menuBarRecentThemesExcludeActiveAndStayLimitedToThree()
+        try commandRequestsAreConsumedOnceAcrossWindows()
+        try winningFocusClaimUpdatesOnlyOneWindowLocalTrigger()
         try await ignoresSecondActionWhileBusy()
         try await duplicateImportExposesReplaceConfirmation()
         try await duplicateImportCanBeCancelled()
@@ -785,6 +787,49 @@ enum AppModelTests {
             model.menuBarRecentThemes.map(\.libraryID) == ["recent-1", "recent-2", "recent-3"],
             "menu bar must show three recent themes without duplicating the active theme"
         )
+    }
+
+    @MainActor
+    private static func commandRequestsAreConsumedOnceAcrossWindows() throws {
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: FakeEngine(), defaults: makeDefaults())
+
+        model.request(.importTheme)
+        let firstRequest = try unwrap(model.commandRequest, "request must publish a typed command and nonce")
+        try expect(
+            model.consumeCommandRequest(nonce: firstRequest.nonce) == .importTheme,
+            "the first window must claim the command"
+        )
+        try expect(
+            model.consumeCommandRequest(nonce: firstRequest.nonce) == nil,
+            "the same command nonce must not be consumed twice"
+        )
+
+        model.request(.refresh)
+        let secondRequest = try unwrap(model.commandRequest, "a new request must replace the retained command")
+        try expect(secondRequest.nonce != firstRequest.nonce, "each command request must publish a new nonce")
+        try expect(
+            model.consumeCommandRequest(nonce: secondRequest.nonce) == .refresh,
+            "a new nonce must remain consumable after the prior command was claimed"
+        )
+    }
+
+    @MainActor
+    private static func winningFocusClaimUpdatesOnlyOneWindowLocalTrigger() throws {
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: FakeEngine(), defaults: makeDefaults())
+        model.request(.focusSearch)
+        let request = try unwrap(model.commandRequest, "focus request must publish a nonce")
+        var firstWindowFocusNonce: UUID?
+        var secondWindowFocusNonce: UUID?
+
+        if model.consumeCommandRequest(nonce: request.nonce) == .focusSearch {
+            firstWindowFocusNonce = request.nonce
+        }
+        if model.consumeCommandRequest(nonce: request.nonce) == .focusSearch {
+            secondWindowFocusNonce = request.nonce
+        }
+
+        try expect(firstWindowFocusNonce == request.nonce, "the winning window must receive its local focus trigger")
+        try expect(secondWindowFocusNonce == nil, "a losing window must not replay the shared focus request")
     }
 
     @MainActor

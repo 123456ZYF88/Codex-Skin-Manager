@@ -58,3 +58,36 @@ Implemented and verified. No version, packaging, or installation changes were ma
 
 - SwiftUI view structure is compile- and source-verified, but this task did not include an interactive VoiceOver or keyboard-navigation UI session.
 - No new visual assets were added, so the visual change is intentionally limited to semantic colors, borders, shadows, and ray restraint.
+
+## Fix Review Findings
+
+### Findings resolved
+
+- Removed `ThemeToolbar`'s direct subscription to the retained shared `AppModel.commandRequest`.
+- Added real `@MainActor` arbitration coverage for first claim, duplicate rejection, and a new request/new nonce.
+- Added a behavioral two-window focus-routing test proving only the winning claim updates its local focus trigger.
+- Made the refresh shortcut explicitly declare Command-R, so all six command shortcuts now have exact assertions.
+
+### RED / GREEN evidence
+
+1. Tests were updated first. The first RED compiled and failed with `App commands must declare shortcut .keyboardShortcut("r", modifiers: .command)`; the new arbitration and winning-focus behavior tests executed successfully before that UI assertion.
+2. After making Command-R explicit and introducing the window-local focus nonce path, the full suite passed.
+3. To independently verify the focus regression assertion was not masked by the earlier shortcut failure, the local-focus production change was temporarily withdrawn. The suite compiled and failed with `Only the winning ContentView must create a window-local search focus trigger`.
+4. Restoring the fix produced a final six-suite PASS with no warnings. A fresh `swift build` also passed without warnings.
+
+### Command and focus routing
+
+- `ContentView` remains the sole consumer of shared command requests. Only a successful `.focusSearch` claim switches to the library and assigns its window-local `searchFocusNonce`.
+- `ThemeLibraryView` passes that local nonce to `ThemeToolbar`.
+- `ThemeToolbar` observes only `searchFocusNonce`; a newly created window starts with `nil` and cannot replay a retained shared request.
+- Import, export, apply, restore, refresh, and search command semantics are otherwise unchanged.
+
+### Additional files changed
+
+- `Sources/CodexSkinManager/CodexSkinManager.swift`
+- `Sources/CodexSkinManagerCore/ContentView.swift`
+- `Sources/CodexSkinManagerCore/ThemeLibraryView.swift`
+- `Sources/CodexSkinManagerCore/ThemeToolbar.swift`
+- `Tests/CodexSkinManagerTests/AppModelTests.swift`
+- `Tests/CodexSkinManagerTests/UICompileTests.swift`
+- `.superpowers/sdd/task-7-report.md`

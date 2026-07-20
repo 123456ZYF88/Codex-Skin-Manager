@@ -5,11 +5,18 @@ package struct ThemeToolbar: View {
     @FocusState private var searchIsFocused: Bool
     package let onImport: () -> Void
     package let onExport: () -> Void
+    package let searchFocusNonce: UUID?
 
-    package init(model: AppModel, onImport: @escaping () -> Void, onExport: @escaping () -> Void) {
+    package init(
+        model: AppModel,
+        onImport: @escaping () -> Void,
+        onExport: @escaping () -> Void,
+        searchFocusNonce: UUID? = nil
+    ) {
         self.model = model
         self.onImport = onImport
         self.onExport = onExport
+        self.searchFocusNonce = searchFocusNonce
     }
 
     package var body: some View {
@@ -61,8 +68,8 @@ package struct ThemeToolbar: View {
             .accessibilityLabel("刷新主题库和引擎状态")
         }
         .disabled(model.operation.isBusy)
-        .task(id: model.commandRequest?.nonce) {
-            guard model.commandRequest?.command == .focusSearch else { return }
+        .task(id: searchFocusNonce) {
+            guard searchFocusNonce != nil else { return }
             await Task.yield()
             searchIsFocused = true
         }

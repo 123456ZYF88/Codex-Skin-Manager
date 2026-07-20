@@ -34,6 +34,7 @@ package struct ContentView: View {
     @State private var showingImporter = false
     @State private var confirmingRestore = false
     @State private var localError: String?
+    @State private var searchFocusNonce: UUID?
 
     package init(model: AppModel) {
         self.model = model
@@ -106,7 +107,8 @@ package struct ContentView: View {
                 model: model,
                 onImport: { showingImporter = true },
                 onExport: presentExportPanel,
-                onImportURLs: importURLs
+                onImportURLs: importURLs,
+                searchFocusNonce: searchFocusNonce
             )
         }
     }
@@ -190,6 +192,7 @@ package struct ContentView: View {
             Task { await model.refresh() }
         case .focusSearch:
             model.selectedSection = .library
+            searchFocusNonce = nonce
         }
     }
 

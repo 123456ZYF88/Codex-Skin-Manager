@@ -5,18 +5,21 @@ package struct ThemeLibraryView: View {
     package let onImport: () -> Void
     package let onExport: () -> Void
     package let onImportURLs: ([URL]) -> Bool
+    package let searchFocusNonce: UUID?
     @State private var isImportTargeted = false
 
     package init(
         model: AppModel,
         onImport: @escaping () -> Void,
         onExport: @escaping () -> Void,
-        onImportURLs: @escaping ([URL]) -> Bool
+        onImportURLs: @escaping ([URL]) -> Bool,
+        searchFocusNonce: UUID? = nil
     ) {
         self.model = model
         self.onImport = onImport
         self.onExport = onExport
         self.onImportURLs = onImportURLs
+        self.searchFocusNonce = searchFocusNonce
     }
 
     package var body: some View {
@@ -29,7 +32,12 @@ package struct ThemeLibraryView: View {
                     .foregroundStyle(VisualStyle.muted)
             }
 
-            ThemeToolbar(model: model, onImport: onImport, onExport: onExport)
+            ThemeToolbar(
+                model: model,
+                onImport: onImport,
+                onExport: onExport,
+                searchFocusNonce: searchFocusNonce
+            )
 
             ViewThatFits(in: .horizontal) {
                 HSplitView {

@@ -35,7 +35,7 @@ struct CodexSkinManagerApp: App {
                 Divider()
 
                 Button("刷新主题库") { model.request(.refresh) }
-                    .keyboardShortcut("r")
+                    .keyboardShortcut("r", modifiers: .command)
                     .disabled(model.operation.isBusy)
                 Button("搜索主题") { model.request(.focusSearch) }
                     .keyboardShortcut("f", modifiers: .command)

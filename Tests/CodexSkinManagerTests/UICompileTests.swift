@@ -201,6 +201,7 @@ enum UICompileTests {
             ".keyboardShortcut(\"e\", modifiers: [.command, .shift])",
             ".keyboardShortcut(.return, modifiers: .command)",
             ".keyboardShortcut(\"r\", modifiers: [.command, .shift])",
+            ".keyboardShortcut(\"r\", modifiers: .command)",
             ".keyboardShortcut(\"f\", modifiers: .command)",
         ] {
             try expect(appSource.contains(shortcut), "App commands must declare shortcut \(shortcut)")
@@ -225,6 +226,30 @@ enum UICompileTests {
         try expect(
             contentSource.contains("model.consumeCommandRequest(nonce: nonce)"),
             "ContentView must claim a shared command before opening UI"
+        )
+        let librarySource = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ThemeLibraryView.swift"),
+            encoding: .utf8
+        )
+        let toolbarSource = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ThemeToolbar.swift"),
+            encoding: .utf8
+        )
+        try expect(
+            contentSource.contains("@State private var searchFocusNonce: UUID?")
+                && contentSource.contains("searchFocusNonce = nonce"),
+            "Only the winning ContentView must create a window-local search focus trigger"
+        )
+        try expect(
+            librarySource.contains("searchFocusNonce: UUID?")
+                && librarySource.contains("ThemeToolbar(")
+                && librarySource.contains("searchFocusNonce: searchFocusNonce"),
+            "ThemeLibraryView must pass the window-local focus trigger to ThemeToolbar"
+        )
+        try expect(
+            toolbarSource.contains(".task(id: searchFocusNonce)")
+                && !toolbarSource.contains("model.commandRequest"),
+            "ThemeToolbar must observe only its window-local focus trigger"
         )
     }
 
