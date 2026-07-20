@@ -27,6 +27,21 @@ package enum ThemeExportName {
     }
 }
 
+package struct WindowCommandPresentationState: Equatable, Sendable {
+    package private(set) var selectedSection: ManagerSection?
+    package private(set) var searchFocusNonce: UUID?
+
+    package init() {}
+
+    @discardableResult
+    package mutating func reduce(claimed command: ManagerCommand, nonce: UUID) -> ManagerSection? {
+        guard command == .focusSearch else { return nil }
+        selectedSection = .library
+        searchFocusNonce = nonce
+        return selectedSection
+    }
+}
+
 /// Composes the main workspaces while the library owns its toolbar and selected-theme detail.
 /// The operation banner remains fixed below the selected workspace.
 package struct ContentView: View {
@@ -34,7 +49,7 @@ package struct ContentView: View {
     @State private var showingImporter = false
     @State private var confirmingRestore = false
     @State private var localError: String?
-    @State private var searchFocusNonce: UUID?
+    @State private var commandPresentation = WindowCommandPresentationState()
 
     package init(model: AppModel) {
         self.model = model
@@ -108,7 +123,7 @@ package struct ContentView: View {
                 onImport: { showingImporter = true },
                 onExport: presentExportPanel,
                 onImportURLs: importURLs,
-                searchFocusNonce: searchFocusNonce
+                searchFocusNonce: commandPresentation.searchFocusNonce
             )
         }
     }
@@ -174,7 +189,12 @@ package struct ContentView: View {
     }
 
     private func consumeCommandRequest(nonce: UUID?) {
-        guard let command = model.consumeCommandRequest(nonce: nonce) else { return }
+        guard let nonce,
+              let command = model.consumeCommandRequest(nonce: nonce)
+        else { return }
+        if let section = commandPresentation.reduce(claimed: command, nonce: nonce) {
+            model.selectedSection = section
+        }
         switch command {
         case .importTheme:
             guard !model.operation.isBusy else { return }
@@ -191,8 +211,7 @@ package struct ContentView: View {
         case .refresh:
             Task { await model.refresh() }
         case .focusSearch:
-            model.selectedSection = .library
-            searchFocusNonce = nonce
+            break
         }
     }
 

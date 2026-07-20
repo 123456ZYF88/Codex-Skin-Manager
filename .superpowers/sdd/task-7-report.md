@@ -91,3 +91,27 @@ Implemented and verified. No version, packaging, or installation changes were ma
 - `Tests/CodexSkinManagerTests/AppModelTests.swift`
 - `Tests/CodexSkinManagerTests/UICompileTests.swift`
 - `.superpowers/sdd/task-7-report.md`
+
+## Second Fix Review Findings
+
+### Production reducer
+
+- Added package-visible `WindowCommandPresentationState`, an `Equatable` and `Sendable` value type with optional `selectedSection` and `searchFocusNonce` presentation state.
+- Its `reduce(claimed:nonce:)` method accepts an already-claimed typed command. A focus command updates the local state to `.library` plus that command nonce and returns the section effect; all other commands leave presentation unchanged.
+- `ContentView` owns one reducer value per window, calls it only after `AppModel.consumeCommandRequest` succeeds, applies the returned section effect, and passes the reducer's local focus nonce down to the toolbar.
+- Focus routing logic now exists only in the production reducer; the `ContentView` command switch retains other command effects without duplicating focus state mutation.
+
+### Behavior test and RED / GREEN
+
+1. `winningFocusClaimUpdatesOnlyOneWindowLocalTrigger` was rewritten first to instantiate three independent production presentation states and call the missing reducer directly.
+2. RED failed at compile time with `cannot find 'WindowCommandPresentationState' in scope`, proving the required production seam did not exist.
+3. GREEN verifies that the first of two windows claims one request and becomes `.library` with the matching nonce, while the losing and newly created windows remain at default state.
+4. The same behavior test publishes a new request/new nonce, lets the second window claim it, and verifies that only that state updates.
+5. Final `/bin/bash Scripts/test.sh`: all six suites passed without warnings. Final `swift build`: passed without warnings. `git diff --check`: passed.
+
+### Files changed in this review fix
+
+- `Sources/CodexSkinManagerCore/ContentView.swift`
+- `Tests/CodexSkinManagerTests/AppModelTests.swift`
+- `Tests/CodexSkinManagerTests/UICompileTests.swift`
+- `.superpowers/sdd/task-7-report.md`

@@ -816,20 +816,38 @@ enum AppModelTests {
     @MainActor
     private static func winningFocusClaimUpdatesOnlyOneWindowLocalTrigger() throws {
         let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: FakeEngine(), defaults: makeDefaults())
+        var firstWindow = WindowCommandPresentationState()
+        var secondWindow = WindowCommandPresentationState()
+        let newWindow = WindowCommandPresentationState()
+
         model.request(.focusSearch)
         let request = try unwrap(model.commandRequest, "focus request must publish a nonce")
-        var firstWindowFocusNonce: UUID?
-        var secondWindowFocusNonce: UUID?
-
-        if model.consumeCommandRequest(nonce: request.nonce) == .focusSearch {
-            firstWindowFocusNonce = request.nonce
+        let firstClaim = try unwrap(
+            model.consumeCommandRequest(nonce: request.nonce),
+            "the first window must win the shared focus claim"
+        )
+        _ = firstWindow.reduce(claimed: firstClaim, nonce: request.nonce)
+        if let losingClaim = model.consumeCommandRequest(nonce: request.nonce) {
+            _ = secondWindow.reduce(claimed: losingClaim, nonce: request.nonce)
         }
-        if model.consumeCommandRequest(nonce: request.nonce) == .focusSearch {
-            secondWindowFocusNonce = request.nonce
-        }
 
-        try expect(firstWindowFocusNonce == request.nonce, "the winning window must receive its local focus trigger")
-        try expect(secondWindowFocusNonce == nil, "a losing window must not replay the shared focus request")
+        try expect(firstWindow.selectedSection == .library, "the winning window must route to the library")
+        try expect(firstWindow.searchFocusNonce == request.nonce, "the winning window must receive its local focus trigger")
+        try expect(secondWindow.selectedSection == nil && secondWindow.searchFocusNonce == nil, "a losing window must remain unchanged")
+        try expect(newWindow.selectedSection == nil && newWindow.searchFocusNonce == nil, "a new window must not replay retained focus state")
+
+        model.request(.focusSearch)
+        let nextRequest = try unwrap(model.commandRequest, "a later focus request must publish a new nonce")
+        let secondClaim = try unwrap(
+            model.consumeCommandRequest(nonce: nextRequest.nonce),
+            "another window must be able to claim the next request"
+        )
+        _ = secondWindow.reduce(claimed: secondClaim, nonce: nextRequest.nonce)
+
+        try expect(nextRequest.nonce != request.nonce, "the next focus request must use a new nonce")
+        try expect(secondWindow.selectedSection == .library, "the next winning window must route to the library")
+        try expect(secondWindow.searchFocusNonce == nextRequest.nonce, "the next winning window must receive the new local focus trigger")
+        try expect(newWindow.selectedSection == nil && newWindow.searchFocusNonce == nil, "an untouched new window must remain at defaults")
     }
 
     @MainActor

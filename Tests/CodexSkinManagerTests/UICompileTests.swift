@@ -236,9 +236,10 @@ enum UICompileTests {
             encoding: .utf8
         )
         try expect(
-            contentSource.contains("@State private var searchFocusNonce: UUID?")
-                && contentSource.contains("searchFocusNonce = nonce"),
-            "Only the winning ContentView must create a window-local search focus trigger"
+            contentSource.contains("@State private var commandPresentation = WindowCommandPresentationState()")
+                && contentSource.contains("commandPresentation.reduce(claimed: command, nonce: nonce)")
+                && contentSource.contains("searchFocusNonce: commandPresentation.searchFocusNonce"),
+            "Only the winning ContentView must reduce a claimed command into window-local presentation"
         )
         try expect(
             librarySource.contains("searchFocusNonce: UUID?")
