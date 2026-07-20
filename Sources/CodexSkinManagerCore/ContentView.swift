@@ -55,6 +55,9 @@ package struct ContentView: View {
         .navigationSplitViewStyle(.balanced)
         .frame(minWidth: 960, minHeight: 640)
         .task { await model.refresh() }
+        .onChange(of: model.commandRequest?.nonce) { nonce in
+            consumeCommandRequest(nonce: nonce)
+        }
         .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.codexSkinPackage]) { result in
             handleImportResult(result)
         }
@@ -168,6 +171,28 @@ package struct ContentView: View {
         }
     }
 
+    private func consumeCommandRequest(nonce: UUID?) {
+        guard let command = model.consumeCommandRequest(nonce: nonce) else { return }
+        switch command {
+        case .importTheme:
+            guard !model.operation.isBusy else { return }
+            showingImporter = true
+        case .exportTheme:
+            guard !model.operation.isBusy else { return }
+            presentExportPanel()
+        case .applySelected:
+            guard !model.operation.isBusy, let theme = model.selectedTheme else { return }
+            Task { await model.apply(theme) }
+        case .restoreOriginal:
+            guard !model.operation.isBusy else { return }
+            confirmingRestore = true
+        case .refresh:
+            Task { await model.refresh() }
+        case .focusSearch:
+            model.selectedSection = .library
+        }
+    }
+
     @discardableResult
     package func importURLs(_ urls: [URL]) -> Bool {
         guard urls.count == 1,
@@ -182,7 +207,7 @@ package struct ContentView: View {
     private func presentExportPanel() {
         guard let theme = model.selectedTheme else { return }
         let panel = NSSavePanel()
-        panel.allowedFileTypes = ["codexskin"]
+        panel.allowedContentTypes = [.codexSkinPackage]
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
         panel.nameFieldStringValue = "\(ThemeExportName.safeExportName(theme.manifest.name, fallback: theme.manifest.id)).codexskin"
@@ -205,6 +230,6 @@ package struct ContentView: View {
 
     private var engineColor: Color {
         guard let status = model.status else { return .secondary }
-        return status.cdpOk && status.injectorAlive ? VisualStyle.jade : .orange
+        return status.cdpOk && status.injectorAlive ? VisualStyle.success : VisualStyle.warning
     }
 }

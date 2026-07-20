@@ -1,6 +1,15 @@
 import Combine
 import Foundation
 
+package enum ManagerCommand: Equatable, Sendable {
+    case importTheme
+    case exportTheme
+    case applySelected
+    case restoreOriginal
+    case refresh
+    case focusSearch
+}
+
 package enum ManagerOperation: Equatable, Sendable {
     case idle
     case validating
@@ -38,6 +47,7 @@ package final class AppModel: ObservableObject {
     @Published package private(set) var pendingReplacementURL: URL?
     @Published package private(set) var pendingRestartThemeID: String?
     @Published package private(set) var lastExportURL: URL?
+    @Published package private(set) var commandRequest: (command: ManagerCommand, nonce: UUID)?
     @Published package var selectedSection: ManagerSection = .dashboard
     @Published package var selectedThemeID: String?
     @Published package var searchText = ""
@@ -52,6 +62,7 @@ package final class AppModel: ObservableObject {
     private let deferredImportRoot: URL
     private var retryIntent: RetryIntent?
     private var importGeneration = 0
+    private var consumedCommandNonce: UUID?
 
     package init(
         catalog: any ThemeCatalogReading,
@@ -89,7 +100,7 @@ package final class AppModel: ObservableObject {
     }
 
     package var menuBarRecentThemes: [ThemeRecord] {
-        Array(recentThemes.prefix(3))
+        Array(recentThemes.filter { !$0.isActive }.prefix(3))
     }
 
     package var visibleThemes: [ThemeRecord] {
@@ -114,6 +125,20 @@ package final class AppModel: ObservableObject {
 
     package func selectTheme(_ theme: ThemeRecord?) {
         selectedThemeID = theme?.libraryID
+    }
+
+    package func request(_ command: ManagerCommand) {
+        commandRequest = (command, UUID())
+    }
+
+    package func consumeCommandRequest(nonce: UUID?) -> ManagerCommand? {
+        guard let request = commandRequest,
+              request.nonce == nonce,
+              consumedCommandNonce != request.nonce
+        else { return nil }
+        // The model is shared by every window, so claiming here prevents duplicate native panels.
+        consumedCommandNonce = request.nonce
+        return request.command
     }
 
     package func retryLastAction() async {

@@ -18,7 +18,7 @@ package struct ThemeDetailView: View {
                 preview
                     .aspectRatio(16 / 9, contentMode: .fit)
                     .clipShape(WeaponPlateShape())
-                    .overlay { WeaponPlateShape().stroke(VisualStyle.ice.opacity(0.45), lineWidth: 1) }
+                    .overlay { WeaponPlateShape().stroke(VisualStyle.selection.opacity(theme.isActive ? 0.5 : 0.16), lineWidth: 1) }
 
                 HStack(alignment: .firstTextBaseline) {
                     Text(theme.manifest.name)
@@ -27,7 +27,7 @@ package struct ThemeDetailView: View {
                     if theme.isActive {
                         Label("已启用", systemImage: "checkmark.seal.fill")
                             .font(.callout.weight(.semibold))
-                            .foregroundStyle(VisualStyle.jade)
+                            .foregroundStyle(VisualStyle.success)
                     }
                 }
 
@@ -71,7 +71,7 @@ package struct ThemeDetailView: View {
             }
             .padding(22)
         }
-        .background(VisualStyle.panel.opacity(0.78))
+        .background(theme.isActive ? VisualStyle.panelStrong : VisualStyle.panelQuiet)
         .accessibilityElement(children: .contain)
     }
 
@@ -95,7 +95,7 @@ package struct ThemeDetailView: View {
                     .font(.system(size: 46, weight: .light))
                     .foregroundStyle(VisualStyle.frost.opacity(0.75))
             }
-            .accessibilityLabel("主题预览不可用")
+            .accessibilityLabel("主题预览 \(theme.manifest.name) 不可用")
         }
     }
 

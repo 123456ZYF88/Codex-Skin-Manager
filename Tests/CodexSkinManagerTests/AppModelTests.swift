@@ -240,6 +240,7 @@ enum AppModelTests {
         try await confirmPendingRestartApplyVerifiesAndRecordsTheme()
         try await selectsInactiveThemeWithoutChangingActivity()
         try await refreshFallsBackWhenSelectedThemeIsRemoved()
+        try await menuBarRecentThemesExcludeActiveAndStayLimitedToThree()
         try await ignoresSecondActionWhileBusy()
         try await duplicateImportExposesReplaceConfirmation()
         try await duplicateImportCanBeCancelled()
@@ -763,6 +764,27 @@ enum AppModelTests {
         await model.refresh()
 
         try expect(model.selectedThemeID == "active", "refresh must fall back to the active theme")
+    }
+
+    @MainActor
+    private static func menuBarRecentThemesExcludeActiveAndStayLimitedToThree() async throws {
+        let defaults = makeDefaults()
+        defaults.set(["active", "recent-1", "recent-2", "recent-3", "recent-4"], forKey: "recentThemeLibraryIDs")
+        let themes = [
+            makeThemeRecord(id: "active", isActive: true),
+            makeThemeRecord(id: "recent-1"),
+            makeThemeRecord(id: "recent-2"),
+            makeThemeRecord(id: "recent-3"),
+            makeThemeRecord(id: "recent-4"),
+        ]
+        let model = AppModel(catalog: FakeThemeCatalog(themes: themes), engine: FakeEngine(), defaults: defaults)
+
+        await model.refresh()
+
+        try expect(
+            model.menuBarRecentThemes.map(\.libraryID) == ["recent-1", "recent-2", "recent-3"],
+            "menu bar must show three recent themes without duplicating the active theme"
+        )
     }
 
     @MainActor

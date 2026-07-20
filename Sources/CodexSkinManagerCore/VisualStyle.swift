@@ -3,10 +3,15 @@ import SwiftUI
 package enum VisualStyle {
     package static let abyss = Color(red: 0.025, green: 0.055, blue: 0.10)
     package static let deepBlue = Color(red: 0.035, green: 0.15, blue: 0.26)
-    package static let ice = Color(red: 0.27, green: 0.78, blue: 1.0)
+    package static let selection = Color(red: 0.27, green: 0.78, blue: 1.0)
+    package static let success = Color(red: 0.28, green: 0.92, blue: 0.73)
+    package static let warning = Color(red: 1.0, green: 0.66, blue: 0.24)
+    package static let panelStrong = Color(red: 0.04, green: 0.075, blue: 0.12).opacity(0.96)
+    package static let panelQuiet = Color(red: 0.045, green: 0.085, blue: 0.14).opacity(0.74)
+    package static let ice = selection
     package static let frost = Color(red: 0.66, green: 0.92, blue: 1.0)
-    package static let jade = Color(red: 0.28, green: 0.92, blue: 0.73)
-    package static let panel = Color(red: 0.045, green: 0.085, blue: 0.14).opacity(0.9)
+    package static let jade = success
+    package static let panel = panelStrong
     package static let muted = Color.white.opacity(0.62)
 }
 
@@ -43,8 +48,8 @@ package struct MangaBurstBackground: View {
                 )
                 Canvas { context, size in
                     let origin = CGPoint(x: size.width * 0.76, y: size.height * 0.18)
-                    for index in 0..<26 {
-                        let angle = Double(index) / 26 * Double.pi * 2
+                    for index in 0..<18 {
+                        let angle = Double(index) / 18 * Double.pi * 2
                         let radius = max(size.width, size.height) * 1.15
                         var ray = Path()
                         ray.move(to: origin)
@@ -54,7 +59,7 @@ package struct MangaBurstBackground: View {
                         ))
                         context.stroke(
                             ray,
-                            with: .color(index.isMultiple(of: 3) ? VisualStyle.ice.opacity(0.12) : .white.opacity(0.035)),
+                            with: .color(index.isMultiple(of: 3) ? VisualStyle.selection.opacity(0.07) : .white.opacity(0.02)),
                             lineWidth: index.isMultiple(of: 3) ? 1.2 : 0.6
                         )
                     }

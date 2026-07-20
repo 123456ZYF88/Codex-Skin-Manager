@@ -2,6 +2,7 @@ import SwiftUI
 
 package struct ThemeToolbar: View {
     @ObservedObject package var model: AppModel
+    @FocusState private var searchIsFocused: Bool
     package let onImport: () -> Void
     package let onExport: () -> Void
 
@@ -16,7 +17,8 @@ package struct ThemeToolbar: View {
             TextField("搜索主题", text: $model.searchText)
                 .textFieldStyle(.roundedBorder)
                 .frame(minWidth: 180, idealWidth: 240, maxWidth: 300)
-                .accessibilityLabel("search")
+                .focused($searchIsFocused)
+                .accessibilityLabel("搜索主题")
 
             Picker("筛选", selection: $model.themeFilter) {
                 ForEach(ThemeFilter.allCases) { filter in
@@ -59,5 +61,10 @@ package struct ThemeToolbar: View {
             .accessibilityLabel("刷新主题库和引擎状态")
         }
         .disabled(model.operation.isBusy)
+        .task(id: model.commandRequest?.nonce) {
+            guard model.commandRequest?.command == .focusSearch else { return }
+            await Task.yield()
+            searchIsFocused = true
+        }
     }
 }

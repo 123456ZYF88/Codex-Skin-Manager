@@ -4,6 +4,7 @@ import SwiftUI
 package struct ThemeCardView: View {
     package let theme: ThemeRecord
     @ObservedObject package var model: AppModel
+    @FocusState private var isFocused: Bool
 
     package init(theme: ThemeRecord, model: AppModel) {
         self.theme = theme
@@ -49,19 +50,19 @@ package struct ThemeCardView: View {
             }
         }
         .buttonStyle(.plain)
-        .background(VisualStyle.panel)
+        .focused($isFocused)
+        .background(isEmphasized ? VisualStyle.panelStrong : VisualStyle.panelQuiet)
         .clipShape(WeaponPlateShape())
         .overlay {
             WeaponPlateShape()
                 .stroke(
-                    model.selectedThemeID == theme.libraryID ? VisualStyle.ice : .white.opacity(0.16),
-                    lineWidth: model.selectedThemeID == theme.libraryID ? 2 : 1
+                    isEmphasized || isFocused ? VisualStyle.selection : .white.opacity(0.12),
+                    lineWidth: isEmphasized || isFocused ? 2 : 1
                 )
         }
         .shadow(
-            color: model.selectedThemeID == theme.libraryID ? VisualStyle.ice.opacity(0.2) : .black.opacity(0.3),
-            radius: 14,
-            y: 7
+            color: isEmphasized ? VisualStyle.selection.opacity(0.16) : .clear,
+            radius: isEmphasized ? 10 : 0
         )
         .accessibilityElement(children: .contain)
         .accessibilityLabel("选择主题 \(theme.manifest.name)")
@@ -80,6 +81,7 @@ package struct ThemeCardView: View {
                     LinearGradient(colors: [.clear, VisualStyle.abyss.opacity(0.8)], startPoint: .top, endPoint: .bottom)
                         .frame(height: 70)
                 }
+                .accessibilityLabel("主题预览 \(theme.manifest.name)")
         } else {
             ZStack {
                 LinearGradient(colors: [VisualStyle.deepBlue, VisualStyle.abyss], startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -87,7 +89,12 @@ package struct ThemeCardView: View {
                     .font(.system(size: 38, weight: .light))
                     .foregroundStyle(VisualStyle.frost.opacity(0.75))
             }
+            .accessibilityLabel("主题预览 \(theme.manifest.name) 不可用")
         }
+    }
+
+    private var isEmphasized: Bool {
+        theme.isActive || model.selectedThemeID == theme.libraryID
     }
 
     private var appearanceLabel: String {

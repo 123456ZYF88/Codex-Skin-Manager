@@ -160,7 +160,7 @@ package struct ThemeLibraryView: View {
                 .font(.title3.weight(.semibold))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(VisualStyle.panel.opacity(0.45))
+        .background(VisualStyle.panelQuiet)
         .accessibilityElement(children: .combine)
     }
 }

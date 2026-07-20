@@ -9,6 +9,9 @@ enum UICompileTests {
         try mainWindowUsesDedicatedWorkspaceViews()
         try themeCardsUseKeyboardFocusableSelectionButtons()
         try importAndExportUseSafeNativeWorkflows()
+        try appCommandsUseTypedRequestsAndExpectedShortcuts()
+        try menuBarUsesSharedStateAndLifecycleActions()
+        try accessibilityAndColdArmorVisualsStayRestrained()
 
         await MainActor.run {
             let theme = makeThemeRecord(id: "ui-theme", name: "UI Theme")
@@ -172,7 +175,124 @@ enum UICompileTests {
         try expect(modelSource.contains("ThemePackageDeferredStore.stage(packageURL"), "duplicate imports must be staged before their security scope ends")
         try expect(modelSource.contains("Task { [self] in"), "import transactions must retain AppModel until their security scope is released")
         try expect(contentSource.contains("NSSavePanel"), "export must use the native save panel")
-        try expect(contentSource.contains("allowedFileTypes = [\"codexskin\"]"), "save panel must restrict exports to .codexskin")
+        try expect(
+            contentSource.contains("allowedContentTypes = [.codexSkinPackage]"),
+            "save panel must use the non-deprecated content-type API for .codexskin"
+        )
+        try expect(!contentSource.contains("allowedFileTypes"), "save panel must not use the deprecated file-type API")
+    }
+
+    private static func appCommandsUseTypedRequestsAndExpectedShortcuts() throws {
+        let appSource = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManager/CodexSkinManager.swift"),
+            encoding: .utf8
+        )
+        let modelSource = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/AppModel.swift"),
+            encoding: .utf8
+        )
+        let contentSource = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ContentView.swift"),
+            encoding: .utf8
+        )
+
+        for shortcut in [
+            ".keyboardShortcut(\"o\", modifiers: .command)",
+            ".keyboardShortcut(\"e\", modifiers: [.command, .shift])",
+            ".keyboardShortcut(.return, modifiers: .command)",
+            ".keyboardShortcut(\"r\", modifiers: [.command, .shift])",
+            ".keyboardShortcut(\"f\", modifiers: .command)",
+        ] {
+            try expect(appSource.contains(shortcut), "App commands must declare shortcut \(shortcut)")
+        }
+        for command in ["importTheme", "exportTheme", "applySelected", "restoreOriginal", "refresh", "focusSearch"] {
+            try expect(appSource.contains("model.request(.\(command))"), "App commands must publish typed request \(command)")
+        }
+        try expect(
+            !appSource.contains("model.refresh()")
+                && !appSource.contains("model.apply(")
+                && !appSource.contains("model.restoreOriginal()"),
+            "App commands must not bypass typed model requests"
+        )
+        try expect(modelSource.contains("package enum ManagerCommand: Equatable, Sendable"), "ManagerCommand must be typed and sendable")
+        try expect(modelSource.contains("var commandRequest: (command: ManagerCommand, nonce: UUID)?"), "AppModel must publish a typed nonce request")
+        try expect(modelSource.contains("package func request(_ command: ManagerCommand)"), "AppModel must own command publication")
+        try expect(contentSource.contains(".onChange(of: model.commandRequest?.nonce)"), "ContentView must consume each command nonce once")
+        try expect(
+            modelSource.contains("package func consumeCommandRequest(nonce: UUID?) -> ManagerCommand?"),
+            "AppModel must arbitrate command consumption across multiple windows"
+        )
+        try expect(
+            contentSource.contains("model.consumeCommandRequest(nonce: nonce)"),
+            "ContentView must claim a shared command before opening UI"
+        )
+    }
+
+    private static func menuBarUsesSharedStateAndLifecycleActions() throws {
+        let source = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/MenuBarContentView.swift"),
+            encoding: .utf8
+        )
+
+        try expect(source.contains("model.menuBarRecentThemes"), "Menu bar must use the model's three-item recent projection")
+        try expect(source.contains("private var activeTheme: ThemeRecord?"), "Menu bar must show the active theme independently from selection")
+        for stateText in ["主题运行中", "主题已暂停", "等待主题注入", "Codex 已停止"] {
+            try expect(source.contains(stateText), "Menu bar must expose non-color status text for \(stateText)")
+        }
+        try expect(source.contains("Task { await model.pauseTheme() }"), "Menu bar pause must reuse AppModel lifecycle action")
+        try expect(source.contains("Task { await model.restartTheme() }"), "Menu bar restart must reuse AppModel lifecycle action")
+        try expect(!source.contains("model.selectedTheme"), "Menu bar activity must never be inferred from selection")
+    }
+
+    private static func accessibilityAndColdArmorVisualsStayRestrained() throws {
+        let root = projectRoot()
+        let menuSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/CodexSkinManagerCore/MenuBarContentView.swift"),
+            encoding: .utf8
+        )
+        let bannerSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/CodexSkinManagerCore/OperationBanner.swift"),
+            encoding: .utf8
+        )
+        let cardSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/CodexSkinManagerCore/ThemeCardView.swift"),
+            encoding: .utf8
+        )
+        let dashboardSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/CodexSkinManagerCore/DashboardView.swift"),
+            encoding: .utf8
+        )
+        let detailSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/CodexSkinManagerCore/ThemeDetailView.swift"),
+            encoding: .utf8
+        )
+        let visualSource = try String(
+            contentsOf: root.appendingPathComponent("Sources/CodexSkinManagerCore/VisualStyle.swift"),
+            encoding: .utf8
+        )
+
+        try expect(menuSource.contains("@Environment(\\.accessibilityReduceMotion)"), "Animated menu progress must respect Reduce Motion")
+        try expect(bannerSource.contains("@Environment(\\.accessibilityReduceMotion)"), "Animated operation progress must respect Reduce Motion")
+        try expect(cardSource.contains("@FocusState") && cardSource.contains("isFocused"), "Theme cards must draw a visible keyboard focus ring")
+        try expect(cardSource.contains("主题预览 \\(theme.manifest.name)"), "Theme card previews must expose their theme name")
+        try expect(dashboardSource.contains("当前主题预览 \\(activeTheme?.manifest.name"), "Dashboard preview must expose the active theme name")
+        try expect(detailSource.contains("主题预览 \\(theme.manifest.name)"), "Detail preview must expose its theme name")
+        try expect(menuSource.contains(".accessibilityLabel") && bannerSource.contains(".accessibilityLabel"), "Icon-only and animated status controls need accessibility labels")
+
+        for token in [
+            "selection = Color(red: 0.27, green: 0.78, blue: 1.0)",
+            "success = Color(red: 0.28, green: 0.92, blue: 0.73)",
+            "warning = Color(red: 1.0, green: 0.66, blue: 0.24)",
+            "panelStrong = Color(red: 0.04, green: 0.075, blue: 0.12).opacity(0.96)",
+            "panelQuiet = Color(red: 0.045, green: 0.085, blue: 0.14).opacity(0.74)",
+        ] {
+            try expect(visualSource.contains(token), "VisualStyle must define semantic token \(token)")
+        }
+        try expect(visualSource.contains("for index in 0..<18"), "Manga burst must use only 18 rays")
+        try expect(visualSource.contains("VisualStyle.selection.opacity(0.07)"), "Strong manga rays must be restrained")
+        try expect(visualSource.contains(".white.opacity(0.02)"), "Minor manga rays must be restrained")
+        try expect(cardSource.contains("isEmphasized"), "Only selected or active cards may receive ice emphasis")
+        try expect(cardSource.contains("VisualStyle.panelQuiet"), "Ordinary theme cards must use the quiet panel treatment")
     }
 
     private static func themeExtensionInstallationIsExplicitAndAtomic() throws {

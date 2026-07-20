@@ -59,9 +59,9 @@ package struct DashboardView: View {
             }
             .padding(18)
         }
-        .background(VisualStyle.panel)
+        .background(VisualStyle.panelStrong)
         .clipShape(WeaponPlateShape())
-        .overlay { WeaponPlateShape().stroke(VisualStyle.ice.opacity(0.55), lineWidth: 1) }
+        .overlay { WeaponPlateShape().stroke(VisualStyle.selection.opacity(0.42), lineWidth: 1) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("当前主题，\(activeTheme?.manifest.name ?? "Codex 原版")，\(appearanceText)")
     }
@@ -74,6 +74,7 @@ package struct DashboardView: View {
                 .scaledToFill()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipped()
+                .accessibilityLabel("当前主题预览 \(activeTheme?.manifest.name ?? "Codex 原版")")
         } else {
             ZStack {
                 LinearGradient(
@@ -85,6 +86,7 @@ package struct DashboardView: View {
                     .font(.system(size: 52, weight: .light))
                     .foregroundStyle(VisualStyle.frost.opacity(0.8))
             }
+            .accessibilityLabel("当前主题预览 \(activeTheme?.manifest.name ?? "Codex 原版")")
         }
     }
 
@@ -170,10 +172,10 @@ package struct DashboardView: View {
         activeTheme?.manifest.name ?? "原版"
     }
 
-    private var codexColor: Color { model.status?.codexRunning == true ? VisualStyle.jade : .orange }
-    private var injectorColor: Color { model.status?.injectorAlive == true ? VisualStyle.jade : .orange }
-    private var cdpColor: Color { model.status?.cdpOk == true ? VisualStyle.jade : .orange }
-    private var themeColor: Color { activeTheme == nil ? .secondary : VisualStyle.ice }
+    private var codexColor: Color { model.status?.codexRunning == true ? VisualStyle.success : VisualStyle.warning }
+    private var injectorColor: Color { model.status?.injectorAlive == true ? VisualStyle.success : VisualStyle.warning }
+    private var cdpColor: Color { model.status?.cdpOk == true ? VisualStyle.success : VisualStyle.warning }
+    private var themeColor: Color { activeTheme == nil ? .secondary : VisualStyle.selection }
 
     private var appearanceText: String {
         switch activeTheme?.manifest.appearance {

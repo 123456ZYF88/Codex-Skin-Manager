@@ -3,6 +3,7 @@ import SwiftUI
 
 package struct OperationBanner: View {
     @ObservedObject package var model: AppModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     package init(model: AppModel) {
         self.model = model
@@ -17,9 +18,14 @@ package struct OperationBanner: View {
                 .lineLimit(2)
             Spacer(minLength: 12)
             if model.operation.isBusy {
-                ProgressView()
-                    .controlSize(.small)
-                    .accessibilityLabel(presentation.text)
+                if reduceMotion {
+                    Image(systemName: "hourglass")
+                        .accessibilityLabel(presentation.text)
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .accessibilityLabel(presentation.text)
+                }
             }
             if model.retryAvailable {
                 Button("重试") {
@@ -58,21 +64,21 @@ package struct OperationBanner: View {
         case .idle:
             ("snowflake", "准备就绪", VisualStyle.ice)
         case .validating:
-            ("checkmark.shield", "正在验证主题包…", .orange)
+            ("checkmark.shield", "正在验证主题包…", VisualStyle.warning)
         case .switching:
-            ("shield.lefthalf.filled", "正在装备主题…", .orange)
+            ("shield.lefthalf.filled", "正在装备主题…", VisualStyle.warning)
         case .importing:
-            ("square.and.arrow.down", "正在安全导入主题包…", .orange)
+            ("square.and.arrow.down", "正在安全导入主题包…", VisualStyle.warning)
         case .exporting:
-            ("square.and.arrow.up", "正在导出并验证主题包…", .orange)
+            ("square.and.arrow.up", "正在导出并验证主题包…", VisualStyle.warning)
         case .restoring:
-            ("arrow.counterclockwise.circle.fill", "正在恢复原版并重启 Codex…", .orange)
+            ("arrow.counterclockwise.circle.fill", "正在恢复原版并重启 Codex…", VisualStyle.warning)
         case .pausing:
-            ("pause.circle.fill", "正在暂停主题…", .orange)
+            ("pause.circle.fill", "正在暂停主题…", VisualStyle.warning)
         case .restarting:
-            ("arrow.clockwise.circle.fill", "正在重启 Codex 并应用主题…", .orange)
+            ("arrow.clockwise.circle.fill", "正在重启 Codex 并应用主题…", VisualStyle.warning)
         case .succeeded(let message):
-            ("checkmark.seal.fill", message, VisualStyle.jade)
+            ("checkmark.seal.fill", message, VisualStyle.success)
         case .failed(let message):
             ("exclamationmark.triangle.fill", message, .red)
         }
