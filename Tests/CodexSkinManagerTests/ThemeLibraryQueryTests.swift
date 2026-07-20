@@ -5,6 +5,9 @@ enum ThemeLibraryQueryTests {
         try searchesNameAndIDCaseInsensitively()
         try filtersAppearanceAndRecents()
         try sortsByNameAndRecentOrder()
+        try resolvesLibraryEmptyState()
+        try resolvesRecentEmptyState()
+        try resolvesFilteredEmptyState()
         print("PASS: ThemeLibraryQueryTests")
     }
 
@@ -46,5 +49,44 @@ enum ThemeLibraryQueryTests {
             .filtered(themes: themes, recentIDs: ["b", "a"])
         try expect(named.map(\.libraryID) == ["a", "b"], "name sort mismatch")
         try expect(recent.map(\.libraryID) == ["b", "a"], "recent sort mismatch")
+    }
+
+    private static func resolvesLibraryEmptyState() throws {
+        let state = ThemeLibraryEmptyStateDecision.resolve(
+            section: .library,
+            hasInstalledThemes: false,
+            searchText: ""
+        )
+        try expect(state.symbol == "shield.slash", "library-empty symbol mismatch")
+        try expect(state.title == "没有找到已安装主题", "library-empty title mismatch")
+        try expect(state.message == "导入 .codexskin 主题包以开始使用。", "library-empty message mismatch")
+    }
+
+    private static func resolvesRecentEmptyState() throws {
+        let state = ThemeLibraryEmptyStateDecision.resolve(
+            section: .recent,
+            hasInstalledThemes: true,
+            searchText: "  "
+        )
+        try expect(state.symbol == "clock.badge.questionmark", "recent-empty symbol mismatch")
+        try expect(state.title == "还没有最近使用的主题", "recent-empty title mismatch")
+        try expect(state.message == "应用主题后会出现在这里", "recent-empty message mismatch")
+    }
+
+    private static func resolvesFilteredEmptyState() throws {
+        let libraryState = ThemeLibraryEmptyStateDecision.resolve(
+            section: .library,
+            hasInstalledThemes: true,
+            searchText: ""
+        )
+        let recentSearchState = ThemeLibraryEmptyStateDecision.resolve(
+            section: .recent,
+            hasInstalledThemes: true,
+            searchText: "missing"
+        )
+        try expect(libraryState == recentSearchState, "recent search must use the filtered-empty state")
+        try expect(libraryState.symbol == "line.3.horizontal.decrease.circle", "filtered-empty symbol mismatch")
+        try expect(libraryState.title == "当前筛选没有匹配主题", "filtered-empty title mismatch")
+        try expect(libraryState.message == "调整搜索或筛选条件后再试。", "filtered-empty message mismatch")
     }
 }

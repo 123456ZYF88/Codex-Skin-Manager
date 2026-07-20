@@ -8,7 +8,6 @@ enum UICompileTests {
         try sidebarUsesConcreteSelectionTags()
         try mainWindowUsesDedicatedWorkspaceViews()
         try themeCardsUseKeyboardFocusableSelectionButtons()
-        try filteredRecentEmptyStateUsesSearchCopy()
         try importAndExportUseSafeNativeWorkflows()
         try appCommandsUseTypedRequestsAndExpectedShortcuts()
         try menuBarUsesSharedStateAndLifecycleActions()
@@ -149,18 +148,6 @@ enum UICompileTests {
         try expect(source.contains(".buttonStyle(.plain)"), "Theme card selection buttons must preserve card styling")
         try expect(!source.contains(".onTapGesture"), "Theme card selection must not rely on pointer-only tap gestures")
         try expect(!source.contains("model.apply"), "Theme cards must select without applying themes")
-    }
-
-    private static func filteredRecentEmptyStateUsesSearchCopy() throws {
-        let source = try String(
-            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ThemeLibraryView.swift"),
-            encoding: .utf8
-        )
-
-        try expect(
-            source.contains("model.selectedSection == .recent && !hasActiveSearch"),
-            "A filtered recent list must not claim that recent history is empty"
-        )
     }
 
     private static func importAndExportUseSafeNativeWorkflows() throws {

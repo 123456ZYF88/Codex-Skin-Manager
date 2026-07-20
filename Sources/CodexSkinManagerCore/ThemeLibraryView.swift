@@ -122,12 +122,12 @@ package struct ThemeLibraryView: View {
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: emptyStateSymbol)
+            Image(systemName: emptyStateDecision.symbol)
                 .font(.system(size: 38, weight: .light))
                 .foregroundStyle(VisualStyle.frost)
-            Text(emptyStateTitle)
+            Text(emptyStateDecision.title)
                 .font(.title3.weight(.semibold))
-            Text(emptyStateMessage)
+            Text(emptyStateDecision.message)
                 .foregroundStyle(VisualStyle.muted)
             if model.selectedSection == .library && model.themes.isEmpty {
                 Button("导入主题", action: onImport)
@@ -144,23 +144,12 @@ package struct ThemeLibraryView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var emptyStateSymbol: String {
-        if model.selectedSection == .recent && !hasActiveSearch { return "clock.badge.questionmark" }
-        return model.themes.isEmpty ? "shield.slash" : "line.3.horizontal.decrease.circle"
-    }
-
-    private var emptyStateTitle: String {
-        if model.selectedSection == .recent && !hasActiveSearch { return "还没有最近使用的主题" }
-        return model.themes.isEmpty ? "没有找到已安装主题" : "当前筛选没有匹配主题"
-    }
-
-    private var emptyStateMessage: String {
-        if model.selectedSection == .recent && !hasActiveSearch { return "应用主题后会出现在这里" }
-        return model.themes.isEmpty ? "导入 .codexskin 主题包以开始使用。" : "调整搜索或筛选条件后再试。"
-    }
-
-    private var hasActiveSearch: Bool {
-        !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    private var emptyStateDecision: ThemeLibraryEmptyStateDecision {
+        ThemeLibraryEmptyStateDecision.resolve(
+            section: model.selectedSection,
+            hasInstalledThemes: !model.themes.isEmpty,
+            searchText: model.searchText
+        )
     }
 
     private var emptyDetail: some View {
