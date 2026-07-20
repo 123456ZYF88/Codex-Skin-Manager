@@ -209,8 +209,8 @@ package final class AppModel: ObservableObject {
         importGeneration &+= 1
         let generation = importGeneration
         operation = .validating
-        Task { [weak self] in
-            await self?.completeImport(packageURL, generation: generation, scoped: scoped)
+        Task { [self] in
+            await completeImport(packageURL, generation: generation, scoped: scoped)
         }
         return true
     }

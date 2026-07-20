@@ -170,6 +170,7 @@ enum UICompileTests {
         )
         try expect(contentSource.contains("model.beginImport(url)"), "ContentView must delegate import reservation to the shared coordinator")
         try expect(modelSource.contains("ThemePackageDeferredStore.stage(packageURL"), "duplicate imports must be staged before their security scope ends")
+        try expect(modelSource.contains("Task { [self] in"), "import transactions must retain AppModel until their security scope is released")
         try expect(contentSource.contains("NSSavePanel"), "export must use the native save panel")
         try expect(contentSource.contains("allowedFileTypes = [\"codexskin\"]"), "save panel must restrict exports to .codexskin")
     }

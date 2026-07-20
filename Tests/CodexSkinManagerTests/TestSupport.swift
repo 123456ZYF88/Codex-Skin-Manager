@@ -5,6 +5,14 @@ struct TestFailure: Error, CustomStringConvertible {
     let description: String
 }
 
+final class WeakReference<T: AnyObject> {
+    weak var value: T?
+
+    init(_ value: T?) {
+        self.value = value
+    }
+}
+
 func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
     guard condition() else { throw TestFailure(description: message) }
 }

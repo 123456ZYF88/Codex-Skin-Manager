@@ -104,6 +104,7 @@ actor FakeEngine: EngineControlling {
     var statusFailure: ManagerError?
     var validationFailure: ManagerError?
     var blockSwitch = false
+    var blockImport = false
     private var engineStatus = EngineStatus(
         session: "live",
         port: 9341,
@@ -116,6 +117,9 @@ actor FakeEngine: EngineControlling {
     private var switchStarted = false
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
     private var switchRelease: CheckedContinuation<Void, Never>?
+    private var importStarted = false
+    private var importWaiters: [CheckedContinuation<Void, Never>] = []
+    private var importRelease: CheckedContinuation<Void, Never>?
 
     init(onSwitch: @escaping @Sendable (String) -> Void = { _ in }) {
         self.onSwitch = onSwitch
@@ -148,6 +152,10 @@ actor FakeEngine: EngineControlling {
 
     func importTheme(packageURL: URL, replace: Bool) async throws -> ThemeImportResult {
         imports.append((packageURL, replace))
+        importStarted = true
+        importWaiters.forEach { $0.resume() }
+        importWaiters.removeAll()
+        if blockImport { await withCheckedContinuation { importRelease = $0 } }
         if let importFailure { throw importFailure }
         if duplicateOnNormalImport && !replace {
             throw ManagerError.themeAlreadyExists(id: "duplicate")
@@ -186,6 +194,7 @@ actor FakeEngine: EngineControlling {
     func setStatusFailure(_ error: ManagerError?) { statusFailure = error }
     func setValidationFailure(_ error: ManagerError?) { validationFailure = error }
     func setBlockSwitch(_ value: Bool) { blockSwitch = value }
+    func setBlockImport(_ value: Bool) { blockImport = value }
     func setStatus(_ status: EngineStatus) { engineStatus = status }
 
     func waitForSwitchStart() async {
@@ -196,6 +205,16 @@ actor FakeEngine: EngineControlling {
     func releaseSwitch() {
         switchRelease?.resume()
         switchRelease = nil
+    }
+
+    func waitForImportStart() async {
+        if importStarted { return }
+        await withCheckedContinuation { importWaiters.append($0) }
+    }
+
+    func releaseImport() {
+        importRelease?.resume()
+        importRelease = nil
     }
 
     func snapshot() -> (
@@ -248,6 +267,7 @@ enum AppModelTests {
         try deferredStoreCorrectsAnExistingWorldReadableRoot()
         try deferredStoreRemovesPartialCopyWhenPostCopyHardeningFails()
         try await importReservationRejectsBusyDrops()
+        try await importTransactionRetainsModelUntilScopeCompletes()
         print("PASS: AppModelTests")
     }
 
@@ -539,12 +559,27 @@ enum AppModelTests {
     }
 
     @MainActor
+    private static func importTransactionRetainsModelUntilScopeCompletes() async throws {
+        let temporary = try makeTemporaryDirectory(prefix: "import-lifetime")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let packageURL = temporary.appendingPathComponent("theme.codexskin")
+        try Data("theme".utf8).write(to: packageURL)
+        let engine = FakeEngine()
+        await engine.setBlockImport(true)
+        var model: AppModel? = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
+        let weakModel = WeakReference(model)
+        try expect(model?.beginImport(packageURL) == true, "transaction must reserve")
+        await engine.waitForImportStart()
+        model = nil
+        try expect(weakModel.value != nil, "the active import transaction must retain its model and scope lease")
+        await engine.releaseImport()
+        for _ in 0..<100 where weakModel.value != nil { await Task.yield() }
+        try expect(weakModel.value == nil, "model must release after the transaction and scope lease complete")
+    }
+
+    @MainActor
     private static func exportsSelectedThemeThenValidatesPackage() async throws {
         let theme = makeThemeRecord(id: "exported", name: "Exported")
-        let temporary = try makeTemporaryDirectory(prefix: "duplicate-prompt")
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        let packageURL = temporary.appendingPathComponent("duplicate.codexskin")
-        try Data("duplicate".utf8).write(to: packageURL)
         let engine = FakeEngine()
         let exporter = FakeThemePackageExporter()
         let model = AppModel(
@@ -773,14 +808,27 @@ enum AppModelTests {
 
     @MainActor
     private static func duplicateImportCanBeCancelled() async throws {
+        let temporary = try makeTemporaryDirectory(prefix: "duplicate-cancel")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let packageURL = temporary.appendingPathComponent("cancel.codexskin")
+        let stagingRoot = temporary.appendingPathComponent("store", isDirectory: true)
+        try Data("duplicate".utf8).write(to: packageURL)
         let engine = FakeEngine()
         await engine.setDuplicateOnNormalImport(true)
-        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: []),
+            engine: engine,
+            defaults: makeDefaults(),
+            deferredImportRoot: stagingRoot
+        )
 
-        _ = await model.importPackage(URL(fileURLWithPath: "/tmp/cancel.codexskin"))
+        let duplicate = await model.importPackage(packageURL)
+        try expect(duplicate, "a real duplicate package must create a cancellation prompt")
+        let staged = try unwrap(model.pendingReplacementURL, "duplicate package must be staged before cancellation")
         model.cancelPendingImport()
 
         try expect(model.pendingReplacementURL == nil, "cancel must clear the duplicate prompt")
+        try expect(!FileManager.default.fileExists(atPath: staged.path), "cancel must delete the staged package")
     }
 
     @MainActor
