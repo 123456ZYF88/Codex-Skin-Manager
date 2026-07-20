@@ -1,16 +1,29 @@
 # Codex Skin Manager
 
-一个原生 macOS 应用，用主窗口或菜单栏切换已经安装的 Codex Dream Skin 主题、导入完整主题包，并一键恢复 Codex 原版界面。
+一个原生 macOS 应用，用状态仪表盘、主题库或菜单栏管理已经安装的 Codex Dream Skin 主题、导入或导出主题包，并一键恢复 Codex 原版界面。
 
 ## 特性
 
 - 原生 SwiftUI 主窗口与 `MenuBarExtra`，无第三方运行依赖。
 - 自带原创冰晶武器徽章和完整 Retina 尺寸的原生 macOS 应用图标。
+- 状态仪表盘集中显示当前主题、引擎状态和可用的暂停、重启与恢复操作。
+- 可搜索、筛选和排序的列表—详情主题库，并保留最近使用记录。
 - 从本机 Dream Skin 主题库读取真实预览图；不复制或上传用户素材。
-- 切换主题时复用 Dream Skin 的热更新流程，失败时由引擎自动重启 Codex。
-- 安全导入 `.codexskin`：限制大小、拒绝目录/链接/路径穿越/多余文件，并原子发布。
+- 支持通过文件选择器或拖放导入 `.codexskin`；导入会限制大小、拒绝目录/链接/路径穿越/多余文件，并原子发布。
+- 安全导出所选主题：重新校验清单、图片、归档结构和发布边界，生成权限为 `0600` 的 `.codexskin`。
+- 切换主题优先复用 Dream Skin 热更新流程；需要重启 Codex 时先征得用户同意，再执行并核验目标主题。
 - 恢复操作固定调用 `--restore-base-theme --restart-codex`，执行前有破坏性确认。
 - 不修改 Codex `app.asar`、应用包或官方代码签名。
+
+## 快捷键
+
+- `⌘O`：导入主题；`⇧⌘E`：导出所选主题。
+- `⌘Return`：应用所选主题；`⇧⌘R`：恢复 Codex 原版。
+- `⌘R`：刷新主题库；`⌘F`：聚焦主题搜索。
+
+## 1.1.0 范围
+
+1.1.0 专注于本地主题库和单图片 `.codexskin` 工作流，不提供在线主题市场，也不支持一个主题包携带多份图片、字体、脚本等多资源格式。
 
 ## 要求
 
@@ -27,7 +40,7 @@
 ./Scripts/install-app.sh
 ```
 
-应用安装到 `~/Applications/Codex Skin Manager.app`。安装脚本只向现有 Dream Skin 引擎补充经过测试的主题导入命令，不覆盖其他引擎文件。
+应用安装到 `~/Applications/Codex Skin Manager.app`。安装脚本只向现有 Dream Skin 引擎原子更新经过测试的导入与重启扩展命令，不覆盖其他引擎文件。
 
 ## `.codexskin` 格式
 
@@ -38,7 +51,7 @@ theme.json
 background.png   # 也支持 .jpg、.jpeg、.webp
 ```
 
-`theme.json` 示例见 `Fixtures/sample-theme/theme.json`。导入成功后不会自动应用，需在主题武库中点击“装备主题”。
+`theme.json` 示例见 `Fixtures/sample-theme/theme.json`。导入成功后不会自动应用，需在主题库详情中点击“应用主题”。
 
 ## 恢复原版
 
