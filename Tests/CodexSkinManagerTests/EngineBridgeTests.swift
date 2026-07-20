@@ -23,11 +23,61 @@ actor RecordingCommandRunner: CommandRunning {
 enum EngineBridgeTests {
     static func run() async throws {
         try await mapsTypedCommandsWithoutShellInterpolation()
+        try await mapsValidationToImporterWithoutMutationFlags()
+        try validateOnlyExitsBeforeThemePublication()
         try await mapsDuplicateImportToTypedError()
         try await processRunnerKeepsArgumentsLiteral()
         try await processRunnerCapsOutput()
         try await processRunnerTimesOut()
         print("PASS: EngineBridgeTests")
+    }
+
+    private static func mapsValidationToImporterWithoutMutationFlags() async throws {
+        let runner = RecordingCommandRunner(results: [
+            CommandResult(exitCode: 0, stdout: "", stderr: ""),
+        ])
+        let engineRoot = URL(fileURLWithPath: "/tmp/fake-engine", isDirectory: true)
+        let bridge = EngineBridge(engineRoot: engineRoot, runner: runner)
+        let packageURL = URL(fileURLWithPath: "/tmp/Validate Me;literal.codexskin")
+
+        try await bridge.validateThemePackage(packageURL: packageURL)
+
+        let requests = await runner.recordedRequests()
+        try expect(requests.count == 1, "validation must issue exactly one command")
+        try expect(
+            requests[0].executable == engineRoot
+                .appendingPathComponent("scripts", isDirectory: true)
+                .appendingPathComponent("import-theme-pack-macos.sh"),
+            "validation must use the importer"
+        )
+        try expect(
+            requests[0].arguments == ["--file", packageURL.path, "--validate-only", "--json"],
+            "validation arguments must be exact and non-mutating"
+        )
+        try expect(requests[0].timeout == 45, "validation timeout mismatch")
+    }
+
+    private static func validateOnlyExitsBeforeThemePublication() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let importerURL = projectRoot
+            .appendingPathComponent("EngineExtension", isDirectory: true)
+            .appendingPathComponent("import-theme-pack-macos.sh")
+        let source = try String(contentsOf: importerURL, encoding: .utf8)
+
+        guard let metadata = source.range(of: "[ \"${#THEME_ID}\" -le 80 ]"),
+              let validation = source.range(of: "if [ \"$VALIDATE_ONLY\" = \"true\" ]; then"),
+              let destination = source.range(of: "DEST=\"$THEMES_ROOT/$THEME_ID\"")
+        else {
+            throw TestFailure(description: "validate-only importer markers are missing")
+        }
+        try expect(source.contains("VALIDATE_ONLY=\"false\""), "validate-only must default off")
+        try expect(source.contains("--validate-only)"), "validate-only argument must be parsed")
+        try expect(source.contains("[--validate-only]"), "usage must document validate-only")
+        try expect(metadata.upperBound <= validation.lowerBound, "validation must run after metadata checks")
+        try expect(validation.upperBound <= destination.lowerBound, "validation must exit before destination lookup or writes")
     }
 
     private static func mapsTypedCommandsWithoutShellInterpolation() async throws {

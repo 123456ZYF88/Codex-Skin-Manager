@@ -52,15 +52,28 @@ final class FakeThemeCatalog: ThemeCatalogReading, @unchecked Sendable {
     }
 }
 
+actor FakeThemePackageExporter: ThemePackageExporting {
+    private(set) var exports: [(themeID: String, destination: URL)] = []
+
+    func export(theme: ThemeRecord, to destination: URL) async throws -> URL {
+        exports.append((theme.libraryID, destination))
+        return destination
+    }
+
+    func snapshot() -> [(themeID: String, destination: URL)] { exports }
+}
+
 actor FakeEngine: EngineControlling {
     private(set) var switchedIDs: [String] = []
     private(set) var imports: [(URL, Bool)] = []
+    private(set) var validatedPackages: [URL] = []
     private(set) var restoreCount = 0
     private(set) var pauseCount = 0
     private(set) var restartCount = 0
     var duplicateOnNormalImport = false
     var switchFailure: ManagerError?
     var statusFailure: ManagerError?
+    var validationFailure: ManagerError?
     var blockSwitch = false
     private var engineStatus = EngineStatus(
         session: "live",
@@ -118,6 +131,11 @@ actor FakeEngine: EngineControlling {
         )
     }
 
+    func validateThemePackage(packageURL: URL) async throws {
+        validatedPackages.append(packageURL)
+        if let validationFailure { throw validationFailure }
+    }
+
     func restoreOriginal() async throws {
         restoreCount += 1
     }
@@ -133,6 +151,7 @@ actor FakeEngine: EngineControlling {
     func setDuplicateOnNormalImport(_ value: Bool) { duplicateOnNormalImport = value }
     func setSwitchFailure(_ error: ManagerError?) { switchFailure = error }
     func setStatusFailure(_ error: ManagerError?) { statusFailure = error }
+    func setValidationFailure(_ error: ManagerError?) { validationFailure = error }
     func setBlockSwitch(_ value: Bool) { blockSwitch = value }
     func setStatus(_ status: EngineStatus) { engineStatus = status }
 
@@ -149,11 +168,12 @@ actor FakeEngine: EngineControlling {
     func snapshot() -> (
         switchedIDs: [String],
         importReplaceFlags: [Bool],
+        validatedPackages: [URL],
         restoreCount: Int,
         pauseCount: Int,
         restartCount: Int
     ) {
-        (switchedIDs, imports.map(\.1), restoreCount, pauseCount, restartCount)
+        (switchedIDs, imports.map(\.1), validatedPackages, restoreCount, pauseCount, restartCount)
     }
 }
 
@@ -176,8 +196,65 @@ enum AppModelTests {
         try await pauseFailsWhenStatusRefreshFails()
         try await restartFailsWhenStatusRefreshFails()
         try await busySwitchBlocksPauseAndRestart()
+        try await exportsSelectedThemeThenValidatesPackage()
+        try await failedExportValidationPreservesPriorURL()
         try await failuresBecomeActionableState()
         print("PASS: AppModelTests")
+    }
+
+    @MainActor
+    private static func exportsSelectedThemeThenValidatesPackage() async throws {
+        let theme = makeThemeRecord(id: "exported", name: "Exported")
+        let engine = FakeEngine()
+        let exporter = FakeThemePackageExporter()
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: [theme]),
+            engine: engine,
+            exporter: exporter,
+            defaults: makeDefaults()
+        )
+        let destination = URL(fileURLWithPath: "/tmp/exported.codexskin")
+        await model.refresh()
+
+        try expect(ManagerOperation.exporting.isBusy, "export operation must block concurrent actions")
+        await model.exportSelectedTheme(to: destination)
+
+        let exports = await exporter.snapshot()
+        let engineSnapshot = await engine.snapshot()
+        try expect(exports.count == 1, "selected theme must be exported exactly once")
+        try expect(exports.first?.themeID == "exported", "selected theme must be passed to exporter")
+        try expect(exports.first?.destination == destination, "export destination mismatch")
+        try expect(engineSnapshot.validatedPackages == [destination], "published export must be engine-validated")
+        try expect(model.lastExportURL == destination, "validated export URL must be retained")
+        try expect(model.operation == .succeeded("已导出 Exported"), "export success message mismatch")
+    }
+
+    @MainActor
+    private static func failedExportValidationPreservesPriorURL() async throws {
+        let theme = makeThemeRecord(id: "validation-failure", name: "Validation Failure")
+        let engine = FakeEngine()
+        let exporter = FakeThemePackageExporter()
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: [theme]),
+            engine: engine,
+            exporter: exporter,
+            defaults: makeDefaults()
+        )
+        let prior = URL(fileURLWithPath: "/tmp/prior.codexskin")
+        let rejected = URL(fileURLWithPath: "/tmp/rejected.codexskin")
+        await model.refresh()
+        await model.exportSelectedTheme(to: prior)
+        await engine.setValidationFailure(.engine("导出后验证失败，请检查主题包。"))
+
+        await model.exportSelectedTheme(to: rejected)
+
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.validatedPackages == [prior, rejected], "every export must be validated")
+        try expect(model.lastExportURL == prior, "failed validation must preserve the prior export URL")
+        try expect(
+            model.operation == .failed("导出后验证失败，请检查主题包。"),
+            "validation failure must remain actionable"
+        )
     }
 
     @MainActor

@@ -7,6 +7,7 @@ set -euo pipefail
 ARCHIVE=""
 REPLACE="false"
 JSON_OUTPUT="false"
+VALIDATE_ONLY="false"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --file)
@@ -20,6 +21,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --json)
       JSON_OUTPUT="true"
+      shift
+      ;;
+    --validate-only)
+      VALIDATE_ONLY="true"
       shift
       ;;
     *)
@@ -84,7 +89,7 @@ abort_import() {
 }
 
 [ -n "$ARCHIVE" ] \
-  || abort_import 2 invalid_argument 'Usage: import-theme-pack-macos.sh --file <theme.codexskin> [--replace] --json'
+  || abort_import 2 invalid_argument 'Usage: import-theme-pack-macos.sh --file <theme.codexskin> [--replace] [--validate-only] --json'
 case "$ARCHIVE" in
   *.codexskin) ;;
   *) abort_import 2 invalid_extension 'Theme package must use the .codexskin extension.' ;;
@@ -170,6 +175,15 @@ case "$THEME_ID" in
 esac
 [ "${#THEME_ID}" -le 80 ] \
   || abort_import 2 invalid_id 'Theme id is too long.'
+
+if [ "$VALIDATE_ONLY" = "true" ]; then
+  if [ "$JSON_OUTPUT" = "true" ]; then
+    emit_json true validated 'Theme package validated successfully.' "$THEME_ID" "$THEME_NAME"
+  else
+    /usr/bin/printf 'Validated: %s\n' "$THEME_NAME"
+  fi
+  exit 0
+fi
 
 DEST="$THEMES_ROOT/$THEME_ID"
 if [ -e "$DEST" ] && [ "$REPLACE" != "true" ]; then

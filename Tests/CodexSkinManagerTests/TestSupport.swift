@@ -38,3 +38,31 @@ func makeThemeRecord(
         isActive: isActive
     )
 }
+
+func writeExportTheme(in root: URL, id: String) throws -> ThemeRecord {
+    let directory = root.appendingPathComponent(id, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    let manifest = ThemeManifest(
+        schemaVersion: 1,
+        id: id,
+        name: "Safe Theme",
+        image: "background.png",
+        appearance: "dark"
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(manifest).write(
+        to: directory.appendingPathComponent("theme.json"),
+        options: .atomic
+    )
+    let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z4ZkAAAAASUVORK5CYII=")!
+    let imageURL = directory.appendingPathComponent("background.png")
+    try png.write(to: imageURL, options: .atomic)
+    return ThemeRecord(
+        libraryID: id,
+        manifest: manifest,
+        directoryURL: directory,
+        imageURL: imageURL,
+        isActive: false
+    )
+}

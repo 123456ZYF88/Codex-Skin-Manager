@@ -19,13 +19,14 @@ package struct ThemeImportResult: Codable, Equatable, Sendable {
 package enum ManagerError: Error, Equatable, LocalizedError {
     case themeAlreadyExists(id: String)
     case engine(String)
+    case invalidPackage(String)
     case invalidResponse(String)
 
     package var errorDescription: String? {
         switch self {
         case .themeAlreadyExists:
             "这个主题已经安装。"
-        case .engine(let message), .invalidResponse(let message):
+        case .engine(let message), .invalidPackage(let message), .invalidResponse(let message):
             message
         }
     }
@@ -35,6 +36,7 @@ package protocol EngineControlling: Sendable {
     func status() async throws -> EngineStatus
     func switchTheme(libraryID: String) async throws
     func importTheme(packageURL: URL, replace: Bool) async throws -> ThemeImportResult
+    func validateThemePackage(packageURL: URL) async throws
     func restoreOriginal() async throws
     func pauseTheme() async throws
     func restartTheme() async throws
@@ -95,6 +97,15 @@ package struct EngineBridge: EngineControlling, Sendable {
         } catch {
             throw ManagerError.invalidResponse("主题导入器返回了无法识别的结果。")
         }
+    }
+
+    package func validateThemePackage(packageURL: URL) async throws {
+        let result = try await runScript(
+            named: "import-theme-pack-macos.sh",
+            arguments: ["--file", packageURL.path, "--validate-only", "--json"],
+            timeout: 45
+        )
+        try requireSuccess(result)
     }
 
     package func restoreOriginal() async throws {

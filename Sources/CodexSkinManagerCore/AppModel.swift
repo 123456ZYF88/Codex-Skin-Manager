@@ -6,6 +6,7 @@ package enum ManagerOperation: Equatable, Sendable {
     case validating
     case switching
     case importing
+    case exporting
     case restoring
     case pausing
     case restarting
@@ -14,7 +15,7 @@ package enum ManagerOperation: Equatable, Sendable {
 
     package var isBusy: Bool {
         switch self {
-        case .validating, .switching, .importing, .restoring, .pausing, .restarting: true
+        case .validating, .switching, .importing, .exporting, .restoring, .pausing, .restarting: true
         case .idle, .succeeded, .failed: false
         }
     }
@@ -28,6 +29,7 @@ package final class AppModel: ObservableObject {
     @Published package private(set) var recentThemeIDs: [String]
     @Published package private(set) var pendingReplacementURL: URL?
     @Published package private(set) var pendingRestartThemeID: String?
+    @Published package private(set) var lastExportURL: URL?
     @Published package var selectedSection: ManagerSection = .dashboard
     @Published package var selectedThemeID: String?
     @Published package var searchText = ""
@@ -36,16 +38,19 @@ package final class AppModel: ObservableObject {
 
     private let catalog: any ThemeCatalogReading
     private let engine: any EngineControlling
+    private let exporter: any ThemePackageExporting
     private let defaults: UserDefaults
     private let recentThemeKey = "recentThemeLibraryIDs"
 
     package init(
         catalog: any ThemeCatalogReading,
         engine: any EngineControlling,
+        exporter: any ThemePackageExporting = ThemePackageExporter(),
         defaults: UserDefaults
     ) {
         self.catalog = catalog
         self.engine = engine
+        self.exporter = exporter
         self.defaults = defaults
         recentThemeIDs = Array((defaults.stringArray(forKey: recentThemeKey) ?? []).prefix(8))
     }
@@ -61,6 +66,7 @@ package final class AppModel: ObservableObject {
         return AppModel(
             catalog: ThemeCatalog(stateRoot: stateRoot),
             engine: EngineBridge(engineRoot: engineRoot),
+            exporter: ThemePackageExporter(),
             defaults: .standard
         )
     }
@@ -147,6 +153,20 @@ package final class AppModel: ObservableObject {
         pendingReplacementURL = nil
         operation = .validating
         await performImport(packageURL, replace: false)
+    }
+
+    package func exportSelectedTheme(to destination: URL) async {
+        guard !operation.isBusy, let theme = selectedTheme else { return }
+        operation = .exporting
+        do {
+            let output = try await exporter.export(theme: theme, to: destination)
+            // Publish success only after the engine has independently accepted the archive.
+            try await engine.validateThemePackage(packageURL: output)
+            lastExportURL = output
+            operation = .succeeded("已导出 \(theme.manifest.name)")
+        } catch {
+            operation = .failed(message(for: error))
+        }
     }
 
     package func replacePendingImport() async {
