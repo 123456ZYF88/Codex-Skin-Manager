@@ -173,13 +173,14 @@ actor FakeEngine: EngineControlling {
 
     func snapshot() -> (
         switchedIDs: [String],
+        importURLs: [URL],
         importReplaceFlags: [Bool],
         validatedPackages: [URL],
         restoreCount: Int,
         pauseCount: Int,
         restartCount: Int
     ) {
-        (switchedIDs, imports.map(\.1), validatedPackages, restoreCount, pauseCount, restartCount)
+        (switchedIDs, imports.map(\.0), imports.map(\.1), validatedPackages, restoreCount, pauseCount, restartCount)
     }
 }
 
@@ -209,6 +210,14 @@ enum AppModelTests {
         try await failedPauseRetriesTheTypedLifecycleAction()
         try await failedRestoreStoresRetryIntent()
         try await failedImportDoesNotRetryStaleSecurityScopedURL()
+        try await failedImportRetiresEarlierRetryIntent()
+        try await retryIsUnavailableWhenItsThemeIsRemoved()
+        try await exportRetrySurvivesSelectionChange()
+        try await exportRetryIsUnavailableWhenItsThemeIsRemoved()
+        try deferredReplacementStagingRejectsSymlinksAndPreservesAPrivateCopy()
+        try await deferredReplacementUsesThePrivateCopyAndCleansItUp()
+        try await pendingReplacementIsCleanedOnCancelAndNextImport()
+        try safeExportNameSanitizesPrimaryAndFallbackNames()
         print("PASS: AppModelTests")
     }
 
@@ -272,13 +281,169 @@ enum AppModelTests {
         await engine.setImportFailure(.engine("主题包验证失败"))
         let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
 
-        await model.importPackage(URL(fileURLWithPath: "/tmp/stale-scope.codexskin"))
+        _ = await model.importPackage(URL(fileURLWithPath: "/tmp/stale-scope.codexskin"))
 
         try expect(model.operation == .failed("主题包验证失败"), "import validation failure must stay visible")
         try expect(!model.retryAvailable, "import must not retain a security-scoped URL for retry")
         await model.retryLastAction()
         let snapshot = await engine.snapshot()
         try expect(snapshot.importReplaceFlags == [false], "retry must never reuse a stale import URL")
+    }
+
+    @MainActor
+    private static func failedImportRetiresEarlierRetryIntent() async throws {
+        let theme = makeThemeRecord(id: "earlier-retry")
+        let catalog = FakeThemeCatalog(themes: [theme])
+        let engine = FakeEngine(onSwitch: { id in catalog.setActiveLibraryID(id) })
+        await engine.setSwitchFailure(.engine("切换失败"))
+        let model = AppModel(catalog: catalog, engine: engine, defaults: makeDefaults())
+        await model.refresh()
+        await model.apply(theme)
+        try expect(model.retryAvailable, "fixture must retain an earlier retryable action")
+
+        await engine.setImportFailure(.engine("主题包验证失败"))
+        _ = await model.importPackage(URL(fileURLWithPath: "/tmp/import-clears-retry.codexskin"))
+
+        try expect(!model.retryAvailable, "a non-retryable import must retire any earlier retry intent")
+        await model.retryLastAction()
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.switchedIDs == ["earlier-retry"], "import failure must not retry an earlier action")
+    }
+
+    @MainActor
+    private static func retryIsUnavailableWhenItsThemeIsRemoved() async throws {
+        let theme = makeThemeRecord(id: "removed-retry")
+        let catalog = FakeThemeCatalog(themes: [theme])
+        let engine = FakeEngine()
+        await engine.setSwitchFailure(.engine("切换失败"))
+        let model = AppModel(catalog: catalog, engine: engine, defaults: makeDefaults())
+        await model.refresh()
+        await model.apply(theme)
+        catalog.themes = []
+        await model.refresh()
+
+        try expect(!model.retryAvailable, "retry must retire an apply intent whose target disappeared")
+        await model.retryLastAction()
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.switchedIDs == ["removed-retry"], "removed retry targets must not execute")
+    }
+
+    @MainActor
+    private static func exportRetrySurvivesSelectionChange() async throws {
+        let original = makeThemeRecord(id: "export-original")
+        let selectedLater = makeThemeRecord(id: "export-later")
+        let engine = FakeEngine()
+        let exporter = FakeThemePackageExporter()
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: [original, selectedLater]),
+            engine: engine,
+            exporter: exporter,
+            defaults: makeDefaults()
+        )
+        await model.refresh()
+        await engine.setValidationFailure(.engine("导出验证失败"))
+        let destination = URL(fileURLWithPath: "/tmp/export-original.codexskin")
+        await model.exportSelectedTheme(to: destination)
+        model.selectTheme(selectedLater)
+        await engine.setValidationFailure(nil)
+
+        try expect(model.retryAvailable, "selection changes must not invalidate a still-installed export target")
+        await model.retryLastAction()
+        let exports = await exporter.snapshot()
+        try expect(exports.map(\.themeID) == ["export-original", "export-original"], "retry must export the stored target, not the new selection")
+    }
+
+    @MainActor
+    private static func exportRetryIsUnavailableWhenItsThemeIsRemoved() async throws {
+        let theme = makeThemeRecord(id: "export-removed")
+        let catalog = FakeThemeCatalog(themes: [theme])
+        let engine = FakeEngine()
+        let exporter = FakeThemePackageExporter()
+        let model = AppModel(catalog: catalog, engine: engine, exporter: exporter, defaults: makeDefaults())
+        await model.refresh()
+        await engine.setValidationFailure(.engine("导出验证失败"))
+        await model.exportSelectedTheme(to: URL(fileURLWithPath: "/tmp/export-removed.codexskin"))
+        catalog.themes = []
+        await model.refresh()
+
+        try expect(!model.retryAvailable, "retry must retire an export intent whose target disappeared")
+        await model.retryLastAction()
+        let exports = await exporter.snapshot()
+        try expect(exports.count == 1, "removed export targets must not execute")
+    }
+
+    private static func deferredReplacementStagingRejectsSymlinksAndPreservesAPrivateCopy() throws {
+        let temporary = try makeTemporaryDirectory(prefix: "deferred-store")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let source = temporary.appendingPathComponent("source.codexskin")
+        let symlink = temporary.appendingPathComponent("linked.codexskin")
+        let storeRoot = temporary.appendingPathComponent("private-store", isDirectory: true)
+        try Data("theme".utf8).write(to: source)
+        try FileManager.default.createSymbolicLink(at: symlink, withDestinationURL: source)
+
+        try expect(ThemePackageDeferredStore.isRegularPackage(source), "a regular .codexskin file must be accepted")
+        try expect(!ThemePackageDeferredStore.isRegularPackage(symlink), "symlinked theme packages must be rejected")
+        let staged = try ThemePackageDeferredStore.stage(source, root: storeRoot)
+        try FileManager.default.removeItem(at: source)
+
+        try expect(staged.deletingLastPathComponent() == storeRoot, "deferred replacements must use the app-owned store")
+        let stagedData = try Data(contentsOf: staged)
+        try expect(stagedData == Data("theme".utf8), "the staged copy must survive after the original URL is gone")
+        let attributes = try FileManager.default.attributesOfItem(atPath: staged.path)
+        try expect(attributes[FileAttributeKey.posixPermissions] as? Int == 0o600, "staged packages must be private to the current user")
+        let directoryAttributes = try FileManager.default.attributesOfItem(atPath: storeRoot.path)
+        try expect(directoryAttributes[FileAttributeKey.posixPermissions] as? Int == 0o700, "the private staging directory must not be group-readable")
+    }
+
+    @MainActor
+    private static func deferredReplacementUsesThePrivateCopyAndCleansItUp() async throws {
+        let temporary = try makeTemporaryDirectory(prefix: "deferred-replace")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let source = temporary.appendingPathComponent("duplicate.codexskin")
+        let storeRoot = temporary.appendingPathComponent("private-store", isDirectory: true)
+        try Data("replacement".utf8).write(to: source)
+
+        let engine = FakeEngine()
+        await engine.setDuplicateOnNormalImport(true)
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
+        let requiresReplacement = await model.importPackage(source)
+        try expect(requiresReplacement, "duplicate import must request deferred replacement staging")
+        let staged = try ThemePackageDeferredStore.stage(source, root: storeRoot)
+        model.storePendingReplacement(staged)
+        try FileManager.default.removeItem(at: source)
+        await engine.setDuplicateOnNormalImport(false)
+
+        await model.replacePendingImport()
+
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.importURLs == [source, staged], "replacement must use the app-owned staged file after the original disappears")
+        try expect(!FileManager.default.fileExists(atPath: staged.path), "staged package must be removed after replacement")
+    }
+
+    @MainActor
+    private static func pendingReplacementIsCleanedOnCancelAndNextImport() async throws {
+        let temporary = try makeTemporaryDirectory(prefix: "deferred-cleanup")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let first = temporary.appendingPathComponent("first.codexskin")
+        let second = temporary.appendingPathComponent("second.codexskin")
+        try Data("first".utf8).write(to: first)
+        try Data("second".utf8).write(to: second)
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: FakeEngine(), defaults: makeDefaults())
+
+        model.storePendingReplacement(first)
+        model.cancelPendingImport()
+        try expect(!FileManager.default.fileExists(atPath: first.path), "cancel must remove a staged replacement")
+
+        model.storePendingReplacement(second)
+        _ = await model.importPackage(URL(fileURLWithPath: "/tmp/next-import.codexskin"))
+        try expect(!FileManager.default.fileExists(atPath: second.path), "a new import must remove the previous staged replacement")
+    }
+
+    private static func safeExportNameSanitizesPrimaryAndFallbackNames() throws {
+        try expect(ThemeExportName.safeExportName("  Blue / Armor!!! ", fallback: "ignored") == "Blue-Armor", "invalid name runs must collapse to one separator")
+        try expect(ThemeExportName.safeExportName("蓝色 主题", fallback: "ignored") == "蓝色-主题", "Unicode letters must be retained")
+        try expect(ThemeExportName.safeExportName("///", fallback: " id / ") == "id", "fallback must be sanitized too")
+        try expect(ThemeExportName.safeExportName("", fallback: " ... ") == "Theme", "empty sanitized names must use a fixed safe fallback")
     }
 
     @MainActor
@@ -496,8 +661,10 @@ enum AppModelTests {
         let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
         let packageURL = URL(fileURLWithPath: "/tmp/duplicate.codexskin")
 
-        await model.importPackage(packageURL)
-        try expect(model.pendingReplacementURL == packageURL, "duplicate import must retain its package URL")
+        let requiresReplacement = await model.importPackage(packageURL)
+        try expect(requiresReplacement, "duplicate import must request an explicit staged replacement")
+        model.storePendingReplacement(packageURL)
+        try expect(model.pendingReplacementURL == packageURL, "staged replacement must remain available for confirmation")
         try expect(model.operation == .idle, "duplicate prompt must return to an actionable state")
         await model.replacePendingImport()
 
@@ -512,7 +679,7 @@ enum AppModelTests {
         await engine.setDuplicateOnNormalImport(true)
         let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
 
-        await model.importPackage(URL(fileURLWithPath: "/tmp/cancel.codexskin"))
+        _ = await model.importPackage(URL(fileURLWithPath: "/tmp/cancel.codexskin"))
         model.cancelPendingImport()
 
         try expect(model.pendingReplacementURL == nil, "cancel must clear the duplicate prompt")

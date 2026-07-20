@@ -6,6 +6,62 @@ package extension UTType {
     static let codexSkinPackage = UTType(exportedAs: "dev.codexskin.package", conformingTo: .zip)
 }
 
+package enum ThemePackageDeferredStore {
+    package static func isRegularPackage(_ url: URL) -> Bool {
+        guard url.isFileURL,
+              url.pathExtension.localizedCaseInsensitiveCompare("codexskin") == .orderedSame,
+              let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true,
+              values.isSymbolicLink != true
+        else { return false }
+        return true
+    }
+
+    package static func stage(_ source: URL, root: URL = defaultRoot()) throws -> URL {
+        guard isRegularPackage(source) else {
+            throw ManagerError.invalidResponse("导入包必须是普通 .codexskin 文件。")
+        }
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let destination = root.appendingPathComponent("\(UUID().uuidString).codexskin")
+        try fileManager.copyItem(at: source, to: destination)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
+        return destination
+    }
+
+    private static func defaultRoot() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support", isDirectory: true)
+            .appendingPathComponent("CodexDreamSkinStudio", isDirectory: true)
+            .appendingPathComponent("PendingThemeImports", isDirectory: true)
+    }
+}
+
+package enum ThemeExportName {
+    package static func safeExportName(_ name: String, fallback: String) -> String {
+        let primary = sanitize(name)
+        if !primary.isEmpty { return primary }
+        let fallback = sanitize(fallback)
+        return fallback.isEmpty ? "Theme" : fallback
+    }
+
+    private static func sanitize(_ value: String) -> String {
+        var result = ""
+        for character in value {
+            if character.isLetter || character.isNumber || character == "-" || character == "_" {
+                result.append(character)
+            } else if result.last != "-" {
+                result.append("-")
+            }
+        }
+        return result.trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
+    }
+}
+
 /// Composes the main workspaces while the library owns its toolbar and selected-theme detail.
 /// The operation banner remains fixed below the selected workspace.
 package struct ContentView: View {
@@ -152,19 +208,32 @@ package struct ContentView: View {
         guard urls.count == 1,
               let url = urls.first,
               url.isFileURL,
-              url.pathExtension.localizedCaseInsensitiveCompare("codexskin") == .orderedSame,
-              (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+              url.pathExtension.localizedCaseInsensitiveCompare("codexskin") == .orderedSame
         else { return false }
 
         localError = nil
+        let scoped = url.startAccessingSecurityScopedResource()
+        guard ThemePackageDeferredStore.isRegularPackage(url) else {
+            if scoped {
+                url.stopAccessingSecurityScopedResource()
+            }
+            return false
+        }
         Task {
-            let scoped = url.startAccessingSecurityScopedResource()
             defer {
                 if scoped {
                     url.stopAccessingSecurityScopedResource()
                 }
             }
-            await model.importPackage(url)
+            let requiresReplacement = await model.importPackage(url)
+            guard requiresReplacement else { return }
+            do {
+                // The private copy is made before the caller's scope ends so replacement never reuses its URL.
+                let staged = try ThemePackageDeferredStore.stage(url)
+                model.storePendingReplacement(staged)
+            } catch {
+                localError = String(error.localizedDescription.prefix(300))
+            }
         }
         return true
     }
@@ -176,22 +245,9 @@ package struct ContentView: View {
         panel.allowedFileTypes = ["codexskin"]
         panel.canCreateDirectories = true
         panel.isExtensionHidden = false
-        panel.nameFieldStringValue = "\(safeExportName(theme.manifest.name, fallback: theme.manifest.id)).codexskin"
+        panel.nameFieldStringValue = "\(ThemeExportName.safeExportName(theme.manifest.name, fallback: theme.manifest.id)).codexskin"
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         Task { await model.exportSelectedTheme(to: destination) }
-    }
-
-    private func safeExportName(_ name: String, fallback: String) -> String {
-        var result = ""
-        for character in name {
-            if character.isLetter || character.isNumber || character == "-" || character == "_" {
-                result.append(character)
-            } else if result.last != "-" {
-                result.append("-")
-            }
-        }
-        let trimmed = result.trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
-        return trimmed.isEmpty ? fallback : trimmed
     }
 
     private var engineStatusText: String {

@@ -100,7 +100,12 @@ package final class AppModel: ObservableObject {
     }
 
     package var retryAvailable: Bool {
-        retryIntent != nil && !operation.isBusy
+        guard !operation.isBusy, let retryIntent else { return false }
+        guard retryTargetExists(for: retryIntent) else {
+            self.retryIntent = nil
+            return false
+        }
+        return true
     }
 
     package func selectTheme(_ theme: ThemeRecord?) {
@@ -111,7 +116,10 @@ package final class AppModel: ObservableObject {
         guard !operation.isBusy, let retryIntent else { return }
         switch retryIntent {
         case .apply(let id):
-            guard let theme = themes.first(where: { $0.libraryID == id }) else { return }
+            guard let theme = themes.first(where: { $0.libraryID == id }) else {
+                self.retryIntent = nil
+                return
+            }
             await performApply(theme)
         case .pause:
             await pauseTheme()
@@ -120,8 +128,11 @@ package final class AppModel: ObservableObject {
         case .restore:
             await restoreOriginal()
         case .export(let id, let destination):
-            guard selectedThemeID == id else { return }
-            await exportSelectedTheme(to: destination)
+            guard let theme = themes.first(where: { $0.libraryID == id }) else {
+                self.retryIntent = nil
+                return
+            }
+            await performExport(theme, to: destination)
         }
     }
 
@@ -181,15 +192,21 @@ package final class AppModel: ObservableObject {
         }
     }
 
-    package func importPackage(_ packageURL: URL) async {
-        guard !operation.isBusy else { return }
-        pendingReplacementURL = nil
+    package func importPackage(_ packageURL: URL) async -> Bool {
+        guard !operation.isBusy else { return false }
+        // Imports cannot be retried safely after the caller's security scope ends.
+        retryIntent = nil
+        discardPendingReplacement()
         operation = .validating
-        await performImport(packageURL, replace: false)
+        return await performImport(packageURL, replace: false)
     }
 
     package func exportSelectedTheme(to destination: URL) async {
         guard !operation.isBusy, let theme = selectedTheme else { return }
+        await performExport(theme, to: destination)
+    }
+
+    private func performExport(_ theme: ThemeRecord, to destination: URL) async {
         retryIntent = .export(theme.libraryID, destination)
         operation = .exporting
         do {
@@ -207,13 +224,19 @@ package final class AppModel: ObservableObject {
     package func replacePendingImport() async {
         guard !operation.isBusy, let packageURL = pendingReplacementURL else { return }
         pendingReplacementURL = nil
-        operation = .importing
-        await performImport(packageURL, replace: true)
+        defer { try? FileManager.default.removeItem(at: packageURL) }
+        _ = await performImport(packageURL, replace: true)
     }
 
     package func cancelPendingImport() {
         guard !operation.isBusy else { return }
-        pendingReplacementURL = nil
+        discardPendingReplacement()
+    }
+
+    package func storePendingReplacement(_ stagedPackageURL: URL) {
+        guard !operation.isBusy else { return }
+        discardPendingReplacement()
+        pendingReplacementURL = stagedPackageURL
     }
 
     package func restoreOriginal() async {
@@ -258,18 +281,35 @@ package final class AppModel: ObservableObject {
         }
     }
 
-    private func performImport(_ packageURL: URL, replace: Bool) async {
+    private func performImport(_ packageURL: URL, replace: Bool) async -> Bool {
         operation = .importing
         do {
             let result = try await engine.importTheme(packageURL: packageURL, replace: replace)
             try await reloadState()
             operation = .succeeded("已导入 \(result.themeName)")
+            return false
         } catch ManagerError.themeAlreadyExists {
-            pendingReplacementURL = packageURL
             operation = .idle
+            return true
         } catch {
             operation = .failed(message(for: error))
+            return false
         }
+    }
+
+    private func retryTargetExists(for retryIntent: RetryIntent) -> Bool {
+        switch retryIntent {
+        case .apply(let id), .export(let id, _):
+            themes.contains(where: { $0.libraryID == id })
+        case .pause, .restart, .restore:
+            true
+        }
+    }
+
+    private func discardPendingReplacement() {
+        guard let packageURL = pendingReplacementURL else { return }
+        pendingReplacementURL = nil
+        try? FileManager.default.removeItem(at: packageURL)
     }
 
     private func reloadState(requiringStatus: Bool = false) async throws {
