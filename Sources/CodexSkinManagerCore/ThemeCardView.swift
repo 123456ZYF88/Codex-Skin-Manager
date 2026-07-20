@@ -11,41 +11,44 @@ package struct ThemeCardView: View {
     }
 
     package var body: some View {
-        VStack(spacing: 0) {
-            preview
-                .aspectRatio(16 / 9, contentMode: .fit)
+        Button(action: { model.selectTheme(theme) }) {
+            VStack(spacing: 0) {
+                preview
+                    .aspectRatio(16 / 9, contentMode: .fit)
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(theme.manifest.name)
-                        .font(.system(size: 20, weight: .semibold, design: .serif))
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    if theme.isActive {
-                        Label("已启用", systemImage: "snowflake")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(VisualStyle.frost)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(VisualStyle.ice.opacity(0.16), in: Capsule())
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(theme.manifest.name)
+                            .font(.system(size: 20, weight: .semibold, design: .serif))
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        if theme.isActive {
+                            Label("已启用", systemImage: "snowflake")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(VisualStyle.frost)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(VisualStyle.ice.opacity(0.16), in: Capsule())
+                        }
+                    }
+
+                    HStack {
+                        Label(appearanceLabel, systemImage: "circle.lefthalf.filled")
+                            .font(.caption)
+                            .foregroundStyle(VisualStyle.muted)
+                        Spacer()
+                        Label(
+                            model.selectedThemeID == theme.libraryID ? "已选中" : "查看详情",
+                            systemImage: model.selectedThemeID == theme.libraryID ? "checkmark.circle.fill" : "chevron.right.circle"
+                        )
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(model.selectedThemeID == theme.libraryID ? VisualStyle.ice : VisualStyle.muted)
                     }
                 }
-
-                HStack {
-                    Label(appearanceLabel, systemImage: "circle.lefthalf.filled")
-                        .font(.caption)
-                        .foregroundStyle(VisualStyle.muted)
-                    Spacer()
-                    Label(
-                        model.selectedThemeID == theme.libraryID ? "已选中" : "查看详情",
-                        systemImage: model.selectedThemeID == theme.libraryID ? "checkmark.circle.fill" : "chevron.right.circle"
-                    )
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(model.selectedThemeID == theme.libraryID ? VisualStyle.ice : VisualStyle.muted)
-                }
+                .padding(14)
             }
-            .padding(14)
         }
+        .buttonStyle(.plain)
         .background(VisualStyle.panel)
         .clipShape(WeaponPlateShape())
         .overlay {
@@ -60,12 +63,9 @@ package struct ThemeCardView: View {
             radius: 14,
             y: 7
         )
-        .contentShape(Rectangle())
-        .onTapGesture { model.selectTheme(theme) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("选择主题 \(theme.manifest.name)")
         .accessibilityAddTraits(model.selectedThemeID == theme.libraryID ? [.isButton, .isSelected] : .isButton)
-        .accessibilityAction { model.selectTheme(theme) }
     }
 
     @ViewBuilder

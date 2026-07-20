@@ -7,6 +7,7 @@ enum UICompileTests {
         try themeExtensionInstallationIsExplicitAndAtomic()
         try sidebarUsesConcreteSelectionTags()
         try mainWindowUsesDedicatedWorkspaceViews()
+        try themeCardsUseKeyboardFocusableSelectionButtons()
 
         await MainActor.run {
             let theme = makeThemeRecord(id: "ui-theme", name: "UI Theme")
@@ -98,28 +99,52 @@ enum UICompileTests {
     }
 
     private static func mainWindowUsesDedicatedWorkspaceViews() throws {
-        let source = try String(
+        let contentSource = try String(
             contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ContentView.swift"),
+            encoding: .utf8
+        )
+        let librarySource = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ThemeLibraryView.swift"),
             encoding: .utf8
         )
 
         for typeName in [
             "DashboardView",
             "ThemeLibraryView",
-            "ThemeDetailView",
-            "ThemeToolbar",
             "OperationBanner",
         ] {
-            try expect(source.contains(typeName), "ContentView must compose \(typeName)")
+            try expect(contentSource.contains(typeName), "ContentView must compose \(typeName)")
+        }
+        for typeName in ["ThemeToolbar", "ThemeDetailView"] {
+            try expect(librarySource.contains(typeName), "ThemeLibraryView must compose \(typeName)")
+            try expect(
+                !contentSource.contains(typeName),
+                "ContentView must not satisfy \(typeName) composition through comments or unused references"
+            )
         }
         try expect(
-            !source.contains("private var themeGrid"),
+            !contentSource.contains("private var themeGrid"),
             "ContentView must delegate theme layout to ThemeLibraryView"
         )
         try expect(
-            !source.contains("enum ManagerSection"),
+            !contentSource.contains("enum ManagerSection"),
             "ContentView must use the shared ManagerSection model"
         )
+    }
+
+    private static func themeCardsUseKeyboardFocusableSelectionButtons() throws {
+        let source = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ThemeCardView.swift"),
+            encoding: .utf8
+        )
+
+        try expect(
+            source.contains("Button(action: { model.selectTheme(theme) })"),
+            "Theme cards must use a keyboard-focusable Button for selection"
+        )
+        try expect(source.contains(".buttonStyle(.plain)"), "Theme card selection buttons must preserve card styling")
+        try expect(!source.contains(".onTapGesture"), "Theme card selection must not rely on pointer-only tap gestures")
+        try expect(!source.contains("model.apply"), "Theme cards must select without applying themes")
     }
 
     private static func themeExtensionInstallationIsExplicitAndAtomic() throws {

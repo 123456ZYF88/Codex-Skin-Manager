@@ -6,8 +6,8 @@ package extension UTType {
     static let codexSkinPackage = UTType(exportedAs: "dev.codexskin.package", conformingTo: .zip)
 }
 
-/// Composes DashboardView and ThemeLibraryView; the library owns ThemeToolbar and ThemeDetailView,
-/// while OperationBanner remains fixed below the selected workspace.
+/// Composes the main workspaces while the library owns its toolbar and selected-theme detail.
+/// The operation banner remains fixed below the selected workspace.
 package struct ContentView: View {
     @ObservedObject package var model: AppModel
     @State private var showingImporter = false
