@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 
 package protocol ThemePackageExporting: Sendable {
     func export(theme: ThemeRecord, to destination: URL) async throws -> URL
@@ -6,9 +7,14 @@ package protocol ThemePackageExporting: Sendable {
 
 package struct ThemePackageExporter: ThemePackageExporting, Sendable {
     private let runner: any CommandRunning
+    private let fileOperations: any ExportFileOperating
 
-    package init(runner: any CommandRunning = ProcessRunner()) {
+    package init(
+        runner: any CommandRunning = ProcessRunner(),
+        fileOperations: any ExportFileOperating = POSIXExportFileOperations()
+    ) {
         self.runner = runner
+        self.fileOperations = fileOperations
     }
 
     package func export(theme: ThemeRecord, to destination: URL) async throws -> URL {
@@ -25,11 +31,9 @@ package struct ThemePackageExporter: ThemePackageExporting, Sendable {
         else {
             throw ManagerError.invalidPackage("主题图片必须使用安全的平坦文件名。")
         }
-        let imageValues = try theme.imageURL.resourceValues(
-            forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
-        )
-        guard imageValues.isRegularFile == true, imageValues.isSymbolicLink != true else {
-            throw ManagerError.invalidPackage("主题图片不是安全的普通文件。")
+        let imageExtension = URL(fileURLWithPath: imageName).pathExtension.lowercased()
+        guard ["png", "jpg", "jpeg", "webp"].contains(imageExtension) else {
+            throw ManagerError.invalidPackage("主题图片必须是 PNG、JPEG 或 WebP。")
         }
 
         let fileManager = FileManager.default
@@ -51,8 +55,18 @@ package struct ThemePackageExporter: ThemePackageExporting, Sendable {
         let archiveURL = work.appendingPathComponent("package.codexskin")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(theme.manifest).write(to: manifestURL, options: .atomic)
-        try fileManager.copyItem(at: theme.imageURL, to: imageURL)
+        let manifestData = try encoder.encode(theme.manifest)
+        guard manifestData.count <= 64 * 1_024 else {
+            throw ManagerError.invalidPackage("主题清单不得超过 64 KB。")
+        }
+        try manifestData.write(to: manifestURL, options: .atomic)
+        let maximumImageBytes = Int64(32 * 1_024 * 1_024 - manifestData.count)
+        try fileOperations.snapshotSource(
+            at: theme.imageURL,
+            to: imageURL,
+            maximumBytes: maximumImageBytes
+        )
+        try validateImage(at: imageURL, extension: imageExtension)
 
         let zip = try await runner.run(CommandRequest(
             executable: URL(fileURLWithPath: "/usr/bin/zip"),
@@ -76,28 +90,50 @@ package struct ThemePackageExporter: ThemePackageExporting, Sendable {
             throw ManagerError.invalidPackage("导出的主题包结构无效。")
         }
 
-        let parent = destination.deletingLastPathComponent()
-        let published = parent.appendingPathComponent(
-            ".\(destination.lastPathComponent).\(UUID().uuidString)"
+        let archiveValues = try archiveURL.resourceValues(
+            forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey]
         )
+        guard archiveValues.isRegularFile == true,
+              archiveValues.isSymbolicLink != true,
+              let archiveBytes = archiveValues.fileSize,
+              archiveBytes > 0,
+              archiveBytes <= 20 * 1_024 * 1_024
+        else {
+            throw ManagerError.invalidPackage("导出的主题包不得超过 20 MB。")
+        }
+
         // Recheck immediately before publication because ZIP creation leaves time for the target to change.
         if (try? fileManager.destinationOfSymbolicLink(atPath: destination.path)) != nil {
             throw ManagerError.invalidPackage("导出目标不能是符号链接。")
         }
-        do {
-            try fileManager.copyItem(at: archiveURL, to: published)
-            // Restrict the staged inode before its atomic publication so no readable window exists.
-            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: published.path)
-            if fileManager.fileExists(atPath: destination.path) {
-                _ = try fileManager.replaceItemAt(destination, withItemAt: published)
-            } else {
-                try fileManager.moveItem(at: published, to: destination)
-            }
-            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
-        } catch {
-            try? fileManager.removeItem(at: published)
-            throw error
-        }
+        try fileOperations.publishArchive(at: archiveURL, to: destination)
         return destination
+    }
+
+    private func validateImage(at imageURL: URL, extension imageExtension: String) throws {
+        let handle = try FileHandle(forReadingFrom: imageURL)
+        let header = try handle.read(upToCount: 12) ?? Data()
+        try handle.close()
+        let bytes = [UInt8](header)
+        let hasExpectedMagic: Bool
+        switch imageExtension {
+        case "png":
+            hasExpectedMagic = bytes.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+        case "jpg", "jpeg":
+            hasExpectedMagic = bytes.count >= 3 && bytes[0] == 0xFF && bytes[1] == 0xD8 && bytes[2] == 0xFF
+        case "webp":
+            hasExpectedMagic = bytes.count >= 12
+                && Array(bytes[0..<4]) == Array("RIFF".utf8)
+                && Array(bytes[8..<12]) == Array("WEBP".utf8)
+        default:
+            hasExpectedMagic = false
+        }
+        guard hasExpectedMagic,
+              let source = CGImageSourceCreateWithURL(imageURL as CFURL, nil),
+              CGImageSourceGetCount(source) == 1,
+              CGImageSourceCreateImageAtIndex(source, 0, nil) != nil
+        else {
+            throw ManagerError.invalidPackage("主题图片内容无法解码或与扩展名不匹配。")
+        }
     }
 }

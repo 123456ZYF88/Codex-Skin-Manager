@@ -21,6 +21,81 @@ actor DestinationSwappingRunner: CommandRunning {
     }
 }
 
+actor ArchiveInflatingRunner: CommandRunning {
+    private var requestCount = 0
+
+    func run(_ request: CommandRequest) async throws -> CommandResult {
+        let result = try await ProcessRunner().run(request)
+        requestCount += 1
+        if requestCount == 2 {
+            let archive = URL(fileURLWithPath: request.arguments[1])
+            let handle = try FileHandle(forWritingTo: archive)
+            try handle.truncate(atOffset: 20 * 1_024 * 1_024 + 1)
+            try handle.close()
+        }
+        return result
+    }
+}
+
+struct SourceSwappingFileOperations: ExportFileOperating {
+    let replacement: URL
+    private let base = POSIXExportFileOperations()
+
+    func snapshotSource(at source: URL, to destination: URL, maximumBytes: Int64) throws {
+        try FileManager.default.removeItem(at: source)
+        try FileManager.default.createSymbolicLink(at: source, withDestinationURL: replacement)
+        try base.snapshotSource(at: source, to: destination, maximumBytes: maximumBytes)
+    }
+
+    func publishArchive(at source: URL, to destination: URL) throws {
+        try base.publishArchive(at: source, to: destination)
+    }
+}
+
+struct SourceGrowingFileOperations: ExportFileOperating {
+    private let base = POSIXExportFileOperations()
+
+    func snapshotSource(at source: URL, to destination: URL, maximumBytes: Int64) throws {
+        let handle = try FileHandle(forWritingTo: source)
+        try handle.truncate(atOffset: UInt64(maximumBytes + 1))
+        try handle.close()
+        try base.snapshotSource(at: source, to: destination, maximumBytes: maximumBytes)
+    }
+
+    func publishArchive(at source: URL, to destination: URL) throws {
+        try base.publishArchive(at: source, to: destination)
+    }
+}
+
+struct PublicationSymlinkSwapFileOperations: ExportFileOperating {
+    let protectedTarget: URL
+    private let base = POSIXExportFileOperations()
+
+    func snapshotSource(at source: URL, to destination: URL, maximumBytes: Int64) throws {
+        try base.snapshotSource(at: source, to: destination, maximumBytes: maximumBytes)
+    }
+
+    func publishArchive(at source: URL, to destination: URL) throws {
+        try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: protectedTarget)
+        try base.publishArchive(at: source, to: destination)
+    }
+}
+
+struct ArchiveGrowingAtPublicationFileOperations: ExportFileOperating {
+    private let base = POSIXExportFileOperations()
+
+    func snapshotSource(at source: URL, to destination: URL, maximumBytes: Int64) throws {
+        try base.snapshotSource(at: source, to: destination, maximumBytes: maximumBytes)
+    }
+
+    func publishArchive(at source: URL, to destination: URL) throws {
+        let handle = try FileHandle(forWritingTo: source)
+        try handle.truncate(atOffset: 20 * 1_024 * 1_024 + 1)
+        try handle.close()
+        try base.publishArchive(at: source, to: destination)
+    }
+}
+
 enum ThemePackageExporterTests {
     static func run() async throws {
         try await exportsExactlyManifestAndImage()
@@ -30,7 +105,197 @@ enum ThemePackageExporterTests {
         try await rechecksDestinationSymlinkBeforePublication()
         try await rejectsSymlinkSourceImage()
         try await rejectsUnsafeManifestImagePath()
+        try await rejectsUnsupportedImageExtension()
+        try await rejectsDisguisedImagePayload()
+        try await rejectsOversizedManifest()
+        try await rejectsOversizedSourceSnapshot()
+        try await rejectsOversizedArchiveBeforePublication()
+        try await rejectsSourceSwappedToSymlinkAtSnapshotBoundary()
+        try await rejectsSourceGrowthAtSnapshotBoundary()
+        try await rejectsArchiveGrowthAtPublicationBoundary()
+        try await safelyReplacesSymlinkIntroducedInsidePublicationWindow()
         print("PASS: ThemePackageExporterTests")
+    }
+
+    private static func rejectsSourceSwappedToSymlinkAtSnapshotBoundary() async throws {
+        let root = try makeTemporaryDirectory(prefix: "exporter-source-swap")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let theme = try writeExportTheme(in: root, id: "source-swap")
+        let replacement = root.appendingPathComponent("replacement.png")
+        try Data(contentsOf: theme.imageURL).write(to: replacement)
+        let operations = SourceSwappingFileOperations(replacement: replacement)
+
+        do {
+            _ = try await ThemePackageExporter(fileOperations: operations).export(
+                theme: theme,
+                to: root.appendingPathComponent("source-swap.codexskin")
+            )
+            throw TestFailure(description: "source swapped to symlink must be rejected")
+        } catch ManagerError.invalidPackage(let message) {
+            try expect(message.contains("普通文件"), "source swap rejection must be actionable")
+        }
+    }
+
+    private static func rejectsSourceGrowthAtSnapshotBoundary() async throws {
+        let root = try makeTemporaryDirectory(prefix: "exporter-source-growth")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let theme = try writeExportTheme(in: root, id: "source-growth")
+
+        do {
+            _ = try await ThemePackageExporter(fileOperations: SourceGrowingFileOperations()).export(
+                theme: theme,
+                to: root.appendingPathComponent("source-growth.codexskin")
+            )
+            throw TestFailure(description: "source growth at snapshot boundary must be rejected")
+        } catch ManagerError.invalidPackage(let message) {
+            try expect(message.contains("32 MB"), "source growth rejection must be actionable")
+        }
+    }
+
+    private static func safelyReplacesSymlinkIntroducedInsidePublicationWindow() async throws {
+        let root = try makeTemporaryDirectory(prefix: "exporter-publication-window")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let theme = try writeExportTheme(in: root, id: "publication-window")
+        let destination = root.appendingPathComponent("publication-window.codexskin")
+        let protectedTarget = root.appendingPathComponent("protected-target.codexskin")
+        let sentinel = Data("must remain unchanged".utf8)
+        try sentinel.write(to: protectedTarget)
+        let operations = PublicationSymlinkSwapFileOperations(protectedTarget: protectedTarget)
+
+        let output = try await ThemePackageExporter(fileOperations: operations).export(
+            theme: theme,
+            to: destination
+        )
+
+        let targetContents = try Data(contentsOf: protectedTarget)
+        let entries = try await archiveEntries(at: output)
+        try expect(targetContents == sentinel, "publication race must not modify symlink target")
+        try expect(entries.exitCode == 0, "publication race output must remain a readable archive")
+        try expect(
+            Set(entries.stdout.split(separator: "\n").map(String.init)) == ["theme.json", "background.png"],
+            "publication race output entries mismatch"
+        )
+        let attributes = try FileManager.default.attributesOfItem(atPath: output.path)
+        let permissions = attributes[FileAttributeKey.posixPermissions] as? NSNumber
+        try expect(permissions?.intValue == 0o600, "publication race output must be 0600")
+    }
+
+    private static func rejectsArchiveGrowthAtPublicationBoundary() async throws {
+        let root = try makeTemporaryDirectory(prefix: "exporter-archive-publication-growth")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let theme = try writeExportTheme(in: root, id: "archive-publication-growth")
+        let destination = root.appendingPathComponent("archive-publication-growth.codexskin")
+
+        do {
+            _ = try await ThemePackageExporter(
+                fileOperations: ArchiveGrowingAtPublicationFileOperations()
+            ).export(theme: theme, to: destination)
+            throw TestFailure(description: "archive growth at publication boundary must be rejected")
+        } catch ManagerError.invalidPackage(let message) {
+            try expect(message.contains("20 MB"), "publication archive growth rejection must be actionable")
+        }
+        try expect(!FileManager.default.fileExists(atPath: destination.path), "grown archive must not publish")
+    }
+
+    private static func rejectsUnsupportedImageExtension() async throws {
+        let root = try makeTemporaryDirectory(prefix: "exporter-extension")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = try writeExportTheme(in: root, id: "unsupported-extension")
+        let theme = replacingManifestImage(of: original, with: "background.gif")
+
+        do {
+            _ = try await ThemePackageExporter().export(
+                theme: theme,
+                to: root.appendingPathComponent("unsupported-extension.codexskin")
+            )
+            throw TestFailure(description: "unsupported image extension must be rejected")
+        } catch ManagerError.invalidPackage(let message) {
+            try expect(message.contains("PNG、JPEG 或 WebP"), "extension rejection must be actionable")
+        }
+    }
+
+    private static func rejectsDisguisedImagePayload() async throws {
+        let root = try makeTemporaryDirectory(prefix: "exporter-disguised-image")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let theme = try writeExportTheme(in: root, id: "disguised-image")
+        try Data("not a png".utf8).write(to: theme.imageURL, options: .atomic)
+
+        do {
+            _ = try await ThemePackageExporter().export(
+                theme: theme,
+                to: root.appendingPathComponent("disguised-image.codexskin")
+            )
+            throw TestFailure(description: "disguised image payload must be rejected")
+        } catch ManagerError.invalidPackage(let message) {
+            try expect(message.contains("无法解码"), "image decoding rejection must be actionable")
+        }
+    }
+
+    private static func rejectsOversizedSourceSnapshot() async throws {
+        let root = try makeTemporaryDirectory(prefix: "exporter-oversized-source")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let theme = try writeExportTheme(in: root, id: "oversized-source")
+        let handle = try FileHandle(forWritingTo: theme.imageURL)
+        try handle.truncate(atOffset: 32 * 1_024 * 1_024 + 1)
+        try handle.close()
+
+        do {
+            _ = try await ThemePackageExporter().export(
+                theme: theme,
+                to: root.appendingPathComponent("oversized-source.codexskin")
+            )
+            throw TestFailure(description: "oversized source snapshot must be rejected")
+        } catch ManagerError.invalidPackage(let message) {
+            try expect(message.contains("32 MB"), "source size rejection must be actionable")
+        }
+    }
+
+    private static func rejectsOversizedManifest() async throws {
+        let root = try makeTemporaryDirectory(prefix: "exporter-oversized-manifest")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = try writeExportTheme(in: root, id: "oversized-manifest")
+        let manifest = ThemeManifest(
+            schemaVersion: original.manifest.schemaVersion,
+            id: original.manifest.id,
+            name: String(repeating: "x", count: 65_536),
+            image: original.manifest.image,
+            appearance: original.manifest.appearance
+        )
+        let theme = ThemeRecord(
+            libraryID: original.libraryID,
+            manifest: manifest,
+            directoryURL: original.directoryURL,
+            imageURL: original.imageURL,
+            isActive: original.isActive
+        )
+
+        do {
+            _ = try await ThemePackageExporter().export(
+                theme: theme,
+                to: root.appendingPathComponent("oversized-manifest.codexskin")
+            )
+            throw TestFailure(description: "oversized manifest must be rejected")
+        } catch ManagerError.invalidPackage(let message) {
+            try expect(message.contains("64 KB"), "manifest size rejection must be actionable")
+        }
+    }
+
+    private static func rejectsOversizedArchiveBeforePublication() async throws {
+        let root = try makeTemporaryDirectory(prefix: "exporter-oversized-archive")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let theme = try writeExportTheme(in: root, id: "oversized-archive")
+        let destination = root.appendingPathComponent("oversized-archive.codexskin")
+
+        do {
+            _ = try await ThemePackageExporter(runner: ArchiveInflatingRunner()).export(
+                theme: theme,
+                to: destination
+            )
+            throw TestFailure(description: "oversized archive must be rejected before publication")
+        } catch ManagerError.invalidPackage(let message) {
+            try expect(message.contains("20 MB"), "archive size rejection must be actionable")
+        }
+        try expect(!FileManager.default.fileExists(atPath: destination.path), "oversized archive must not publish")
     }
 
     private static func exportsExactlyManifestAndImage() async throws {
@@ -204,5 +469,22 @@ enum ThemePackageExporterTests {
             arguments: ["-Z1", archive.path],
             timeout: 10
         ))
+    }
+
+    private static func replacingManifestImage(of theme: ThemeRecord, with image: String) -> ThemeRecord {
+        let manifest = ThemeManifest(
+            schemaVersion: theme.manifest.schemaVersion,
+            id: theme.manifest.id,
+            name: theme.manifest.name,
+            image: image,
+            appearance: theme.manifest.appearance
+        )
+        return ThemeRecord(
+            libraryID: theme.libraryID,
+            manifest: manifest,
+            directoryURL: theme.directoryURL,
+            imageURL: theme.imageURL,
+            isActive: theme.isActive
+        )
     }
 }

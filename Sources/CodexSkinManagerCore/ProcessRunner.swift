@@ -56,6 +56,15 @@ package struct ProcessRunner: CommandRunning, Sendable {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        // Register completion before launch: very short-lived commands can exit before an
+        // asynchronously scheduled waitUntilExit() starts observing Foundation's task state.
+        let terminationStatuses = AsyncStream<Int32>(bufferingPolicy: .bufferingNewest(1)) { continuation in
+            process.terminationHandler = { completedProcess in
+                continuation.yield(completedProcess.terminationStatus)
+                continuation.finish()
+            }
+        }
+
         do {
             try process.run()
         } catch {
@@ -69,7 +78,9 @@ package struct ProcessRunner: CommandRunning, Sendable {
             Self.readCapped(from: stderrPipe.fileHandleForReading)
         }
         let completionTask = Task.detached(priority: .userInitiated) { () -> Int32 in
-            process.waitUntilExit()
+            for await status in terminationStatuses {
+                return status
+            }
             return process.terminationStatus
         }
 

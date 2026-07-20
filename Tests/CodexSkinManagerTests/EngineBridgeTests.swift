@@ -22,6 +22,7 @@ actor RecordingCommandRunner: CommandRunning {
 
 enum EngineBridgeTests {
     static func run() async throws {
+        try await processRunnerCompletesRepeatedRapidExitCommands()
         try await mapsTypedCommandsWithoutShellInterpolation()
         try await mapsValidationToImporterWithoutMutationFlags()
         try validateOnlyExitsBeforeThemePublication()
@@ -30,6 +31,17 @@ enum EngineBridgeTests {
         try await processRunnerCapsOutput()
         try await processRunnerTimesOut()
         print("PASS: EngineBridgeTests")
+    }
+
+    private static func processRunnerCompletesRepeatedRapidExitCommands() async throws {
+        for _ in 0..<64 {
+            let result = try await ProcessRunner().run(CommandRequest(
+                executable: URL(fileURLWithPath: "/usr/bin/true"),
+                arguments: [],
+                timeout: 1
+            ))
+            try expect(result.exitCode == 0, "rapidly exiting command must complete successfully")
+        }
     }
 
     private static func mapsValidationToImporterWithoutMutationFlags() async throws {
