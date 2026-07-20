@@ -2,6 +2,7 @@
 .build/
 build/
 .worktrees/
+.superpowers/
 DerivedData/
 *.xcuserstate
 *.codexskin
