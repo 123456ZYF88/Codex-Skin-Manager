@@ -70,6 +70,7 @@
 - Modify: `Sources/CodexSkinManagerCore/AppModel.swift`
 - Modify: `Tests/CodexSkinManagerTests/TestMain.swift`
 - Modify: `Tests/CodexSkinManagerTests/AppModelTests.swift`
+- Modify: `Tests/CodexSkinManagerTests/TestSupport.swift`
 
 **Interfaces:**
 - Produces: `ManagerSection`, `ThemeFilter`, `ThemeSort`, and `ThemeLibraryQuery.filtered(themes:recentIDs:) -> [ThemeRecord]`.
@@ -91,8 +92,8 @@ enum ThemeLibraryQueryTests {
 
     private static func searchesNameAndIDCaseInsensitively() throws {
         let themes = [
-            makeQueryTheme(id: "frost-dragon", name: "寒龙子", appearance: "dark"),
-            makeQueryTheme(id: "jade-palace", name: "碧落金阙", appearance: "light"),
+            makeThemeRecord(id: "frost-dragon", name: "寒龙子", appearance: "dark"),
+            makeThemeRecord(id: "jade-palace", name: "碧落金阙", appearance: "light"),
         ]
         let byName = ThemeLibraryQuery(searchText: "寒龙", filter: .all, sort: .name)
             .filtered(themes: themes, recentIDs: [])
@@ -104,9 +105,9 @@ enum ThemeLibraryQueryTests {
 
     private static func filtersAppearanceAndRecents() throws {
         let themes = [
-            makeQueryTheme(id: "dark", name: "Dark", appearance: "dark"),
-            makeQueryTheme(id: "light", name: "Light", appearance: "light"),
-            makeQueryTheme(id: "auto", name: "Auto", appearance: nil),
+            makeThemeRecord(id: "dark", name: "Dark", appearance: "dark"),
+            makeThemeRecord(id: "light", name: "Light", appearance: "light"),
+            makeThemeRecord(id: "auto", name: "Auto", appearance: nil),
         ]
         let light = ThemeLibraryQuery(searchText: "", filter: .light, sort: .name)
             .filtered(themes: themes, recentIDs: ["auto", "dark"])
@@ -118,8 +119,8 @@ enum ThemeLibraryQueryTests {
 
     private static func sortsByNameAndRecentOrder() throws {
         let themes = [
-            makeQueryTheme(id: "b", name: "Beta", appearance: "dark"),
-            makeQueryTheme(id: "a", name: "Alpha", appearance: "dark"),
+            makeThemeRecord(id: "b", name: "Beta", appearance: "dark"),
+            makeThemeRecord(id: "a", name: "Alpha", appearance: "dark"),
         ]
         let named = ThemeLibraryQuery(searchText: "", filter: .all, sort: .name)
             .filtered(themes: themes, recentIDs: ["b", "a"])
