@@ -16,16 +16,39 @@ package struct ThemeImportResult: Codable, Equatable, Sendable {
     }
 }
 
+package struct PendingThemeReplacement: Equatable, Sendable {
+    package let packageURL: URL
+    package let incomingID: String
+    package let incomingName: String
+    package let existingID: String
+    package let existingName: String
+
+    package init(
+        packageURL: URL,
+        incomingID: String,
+        incomingName: String,
+        existingID: String,
+        existingName: String
+    ) {
+        self.packageURL = packageURL
+        self.incomingID = incomingID
+        self.incomingName = incomingName
+        self.existingID = existingID
+        self.existingName = existingName
+    }
+}
+
 package enum ManagerError: Error, Equatable, LocalizedError {
-    case themeAlreadyExists(id: String)
+    case themeAlreadyExists(id: String, name: String)
     case engine(String)
+    case invalidPackage(String)
     case invalidResponse(String)
 
     package var errorDescription: String? {
         switch self {
         case .themeAlreadyExists:
             "这个主题已经安装。"
-        case .engine(let message), .invalidResponse(let message):
+        case .engine(let message), .invalidPackage(let message), .invalidResponse(let message):
             message
         }
     }
@@ -35,7 +58,10 @@ package protocol EngineControlling: Sendable {
     func status() async throws -> EngineStatus
     func switchTheme(libraryID: String) async throws
     func importTheme(packageURL: URL, replace: Bool) async throws -> ThemeImportResult
+    func validateThemePackage(packageURL: URL) async throws
     func restoreOriginal() async throws
+    func pauseTheme() async throws
+    func restartTheme() async throws
 }
 
 package struct EngineBridge: EngineControlling, Sendable {
@@ -50,7 +76,7 @@ package struct EngineBridge: EngineControlling, Sendable {
     package func status() async throws -> EngineStatus {
         let result = try await runScript(
             named: "status-dream-skin-macos.sh",
-            arguments: ["--json"],
+            arguments: ["--json", "--deep"],
             timeout: 8
         )
         try requireSuccess(result)
@@ -80,8 +106,21 @@ package struct EngineBridge: EngineControlling, Sendable {
             timeout: 45
         )
         if result.exitCode == 3 {
-            let payload = try? JSONDecoder().decode(ThemeImportResult.self, from: Data(result.stdout.utf8))
-            throw ManagerError.themeAlreadyExists(id: payload?.themeId ?? "")
+            guard let payload = try? JSONDecoder().decode(
+                ThemeImportResult.self,
+                from: Data(result.stdout.utf8)
+            ) else {
+                throw ManagerError.invalidResponse("主题导入器返回了无法识别的重复主题信息。")
+            }
+            let themeID = payload.themeId.trimmingCharacters(in: .whitespacesAndNewlines)
+            let themeName = payload.themeName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard payload.code == "theme_exists", !themeID.isEmpty, !themeName.isEmpty else {
+                throw ManagerError.invalidResponse("主题导入器返回了无法识别的重复主题信息。")
+            }
+            throw ManagerError.themeAlreadyExists(
+                id: themeID,
+                name: themeName
+            )
         }
         try requireSuccess(result)
         do {
@@ -95,10 +134,37 @@ package struct EngineBridge: EngineControlling, Sendable {
         }
     }
 
+    package func validateThemePackage(packageURL: URL) async throws {
+        let result = try await runScript(
+            named: "import-theme-pack-macos.sh",
+            arguments: ["--file", packageURL.path, "--validate-only", "--json"],
+            timeout: 45
+        )
+        try requireSuccess(result)
+    }
+
     package func restoreOriginal() async throws {
         let result = try await runScript(
             named: "restore-dream-skin-macos.sh",
             arguments: ["--restore-base-theme", "--restart-codex"],
+            timeout: 90
+        )
+        try requireSuccess(result)
+    }
+
+    package func pauseTheme() async throws {
+        let result = try await runScript(
+            named: "pause-dream-skin-macos.sh",
+            arguments: [],
+            timeout: 30
+        )
+        try requireSuccess(result)
+    }
+
+    package func restartTheme() async throws {
+        let result = try await runScript(
+            named: "restart-dream-skin-macos.sh",
+            arguments: [],
             timeout: 90
         )
         try requireSuccess(result)

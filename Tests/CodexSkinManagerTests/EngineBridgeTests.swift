@@ -22,12 +22,75 @@ actor RecordingCommandRunner: CommandRunning {
 
 enum EngineBridgeTests {
     static func run() async throws {
+        try await processRunnerCompletesRepeatedRapidExitCommands()
         try await mapsTypedCommandsWithoutShellInterpolation()
+        try await mapsValidationToImporterWithoutMutationFlags()
+        try validateOnlyExitsBeforeThemePublication()
         try await mapsDuplicateImportToTypedError()
+        try await rejectsMalformedDuplicateIdentity()
         try await processRunnerKeepsArgumentsLiteral()
         try await processRunnerCapsOutput()
         try await processRunnerTimesOut()
         print("PASS: EngineBridgeTests")
+    }
+
+    private static func processRunnerCompletesRepeatedRapidExitCommands() async throws {
+        for _ in 0..<64 {
+            let result = try await ProcessRunner().run(CommandRequest(
+                executable: URL(fileURLWithPath: "/usr/bin/true"),
+                arguments: [],
+                timeout: 1
+            ))
+            try expect(result.exitCode == 0, "rapidly exiting command must complete successfully")
+        }
+    }
+
+    private static func mapsValidationToImporterWithoutMutationFlags() async throws {
+        let runner = RecordingCommandRunner(results: [
+            CommandResult(exitCode: 0, stdout: "", stderr: ""),
+        ])
+        let engineRoot = URL(fileURLWithPath: "/tmp/fake-engine", isDirectory: true)
+        let bridge = EngineBridge(engineRoot: engineRoot, runner: runner)
+        let packageURL = URL(fileURLWithPath: "/tmp/Validate Me;literal.codexskin")
+
+        try await bridge.validateThemePackage(packageURL: packageURL)
+
+        let requests = await runner.recordedRequests()
+        try expect(requests.count == 1, "validation must issue exactly one command")
+        try expect(
+            requests[0].executable == engineRoot
+                .appendingPathComponent("scripts", isDirectory: true)
+                .appendingPathComponent("import-theme-pack-macos.sh"),
+            "validation must use the importer"
+        )
+        try expect(
+            requests[0].arguments == ["--file", packageURL.path, "--validate-only", "--json"],
+            "validation arguments must be exact and non-mutating"
+        )
+        try expect(requests[0].timeout == 45, "validation timeout mismatch")
+    }
+
+    private static func validateOnlyExitsBeforeThemePublication() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let importerURL = projectRoot
+            .appendingPathComponent("EngineExtension", isDirectory: true)
+            .appendingPathComponent("import-theme-pack-macos.sh")
+        let source = try String(contentsOf: importerURL, encoding: .utf8)
+
+        guard let metadata = source.range(of: "[ \"${#THEME_ID}\" -le 80 ]"),
+              let validation = source.range(of: "if [ \"$VALIDATE_ONLY\" = \"true\" ]; then"),
+              let destination = source.range(of: "DEST=\"$THEMES_ROOT/$THEME_ID\"")
+        else {
+            throw TestFailure(description: "validate-only importer markers are missing")
+        }
+        try expect(source.contains("VALIDATE_ONLY=\"false\""), "validate-only must default off")
+        try expect(source.contains("--validate-only)"), "validate-only argument must be parsed")
+        try expect(source.contains("[--validate-only]"), "usage must document validate-only")
+        try expect(metadata.upperBound <= validation.lowerBound, "validation must run after metadata checks")
+        try expect(validation.upperBound <= destination.lowerBound, "validation must exit before destination lookup or writes")
     }
 
     private static func mapsTypedCommandsWithoutShellInterpolation() async throws {
@@ -43,6 +106,8 @@ enum EngineBridgeTests {
             CommandResult(exitCode: 0, stdout: importJSON, stderr: ""),
             CommandResult(exitCode: 0, stdout: importJSON, stderr: ""),
             CommandResult(exitCode: 0, stdout: "", stderr: ""),
+            CommandResult(exitCode: 0, stdout: "", stderr: ""),
+            CommandResult(exitCode: 0, stdout: "", stderr: ""),
         ])
         let engineRoot = URL(fileURLWithPath: "/tmp/fake-engine", isDirectory: true)
         let bridge = EngineBridge(engineRoot: engineRoot, runner: runner)
@@ -53,18 +118,24 @@ enum EngineBridgeTests {
         _ = try await bridge.importTheme(packageURL: packageURL, replace: false)
         _ = try await bridge.importTheme(packageURL: packageURL, replace: true)
         try await bridge.restoreOriginal()
+        try await bridge.pauseTheme()
+        try await bridge.restartTheme()
 
         let requests = await runner.recordedRequests()
         try expect(status.themeName == "Current", "status JSON must decode")
-        try expect(requests.count == 5, "bridge must issue five commands")
+        try expect(requests.count == 7, "bridge must issue seven commands")
         try expect(requests[0].executable.lastPathComponent == "status-dream-skin-macos.sh", "status script mismatch")
-        try expect(requests[0].arguments == ["--json"], "status arguments mismatch")
+        try expect(requests[0].arguments == ["--json", "--deep"], "status arguments mismatch")
         try expect(requests[1].executable.lastPathComponent == "switch-theme-macos.sh", "switch script mismatch")
         try expect(requests[1].arguments == ["--id", "preset-midnight-aurora;literal"], "theme id must stay one argument")
         try expect(requests[2].arguments == ["--file", packageURL.path, "--json"], "import arguments mismatch")
         try expect(requests[3].arguments == ["--file", packageURL.path, "--replace", "--json"], "replace arguments mismatch")
         try expect(requests[4].executable.lastPathComponent == "restore-dream-skin-macos.sh", "restore script mismatch")
         try expect(requests[4].arguments == ["--restore-base-theme", "--restart-codex"], "restore must request full original UI and restart")
+        try expect(requests[5].executable.lastPathComponent == "pause-dream-skin-macos.sh", "pause script mismatch")
+        try expect(requests[5].arguments.isEmpty, "pause must not interpolate arguments")
+        try expect(requests[6].executable.lastPathComponent == "restart-dream-skin-macos.sh", "restart script mismatch")
+        try expect(requests[6].arguments.isEmpty, "restart must not interpolate arguments")
     }
 
     private static func mapsDuplicateImportToTypedError() async throws {
@@ -82,8 +153,36 @@ enum EngineBridgeTests {
                 replace: false
             )
             throw TestFailure(description: "duplicate import should throw")
-        } catch ManagerError.themeAlreadyExists(let id) {
+        } catch ManagerError.themeAlreadyExists(let id, let name) {
             try expect(id == "duplicate-id", "duplicate id must be preserved")
+            try expect(name == "Duplicate", "duplicate name must be preserved")
+        }
+    }
+
+    private static func rejectsMalformedDuplicateIdentity() async throws {
+        let runner = RecordingCommandRunner(results: [
+            CommandResult(exitCode: 3, stdout: "not-json", stderr: "exists"),
+            CommandResult(
+                exitCode: 3,
+                stdout: #"{"pass":false,"code":"theme_exists","message":"exists","themeId":" ","themeName":""}"#,
+                stderr: "exists"
+            ),
+        ])
+        let bridge = EngineBridge(engineRoot: URL(fileURLWithPath: "/tmp/fake-engine"), runner: runner)
+
+        for name in ["malformed", "empty-identity"] {
+            do {
+                _ = try await bridge.importTheme(
+                    packageURL: URL(fileURLWithPath: "/tmp/\(name).codexskin"),
+                    replace: false
+                )
+                throw TestFailure(description: "invalid duplicate metadata should throw")
+            } catch ManagerError.invalidResponse(let message) {
+                try expect(
+                    message == "主题导入器返回了无法识别的重复主题信息。",
+                    "invalid duplicate metadata must fail closed"
+                )
+            }
         }
     }
 

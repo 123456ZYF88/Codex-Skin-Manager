@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -5,21 +6,50 @@ package extension UTType {
     static let codexSkinPackage = UTType(exportedAs: "dev.codexskin.package", conformingTo: .zip)
 }
 
-private enum ManagerSection: String, CaseIterable, Identifiable {
-    case library
-    case recent
+package enum ThemeExportName {
+    package static func safeExportName(_ name: String, fallback: String) -> String {
+        let primary = sanitize(name)
+        if !primary.isEmpty { return primary }
+        let fallback = sanitize(fallback)
+        return fallback.isEmpty ? "Theme" : fallback
+    }
 
-    var id: String { rawValue }
-    var title: String { self == .library ? "主题武库" : "最近装备" }
-    var symbol: String { self == .library ? "shield.lefthalf.filled" : "clock.arrow.circlepath" }
+    private static func sanitize(_ value: String) -> String {
+        var result = ""
+        for character in value {
+            if character.isLetter || character.isNumber || character == "-" || character == "_" {
+                result.append(character)
+            } else if result.last != "-" {
+                result.append("-")
+            }
+        }
+        return result.trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
+    }
 }
 
+package struct WindowCommandPresentationState: Equatable, Sendable {
+    package private(set) var selectedSection: ManagerSection?
+    package private(set) var searchFocusNonce: UUID?
+
+    package init() {}
+
+    @discardableResult
+    package mutating func reduce(claimed command: ManagerCommand, nonce: UUID) -> ManagerSection? {
+        guard command == .focusSearch else { return nil }
+        selectedSection = .library
+        searchFocusNonce = nonce
+        return selectedSection
+    }
+}
+
+/// Composes the main workspaces while the library owns its toolbar and selected-theme detail.
+/// The operation banner remains fixed below the selected workspace.
 package struct ContentView: View {
     @ObservedObject package var model: AppModel
-    @State private var selectedSection: ManagerSection = .library
     @State private var showingImporter = false
     @State private var confirmingRestore = false
     @State private var localError: String?
+    @State private var commandPresentation = WindowCommandPresentationState()
 
     package init(model: AppModel) {
         self.model = model
@@ -31,19 +61,19 @@ package struct ContentView: View {
         } detail: {
             ZStack {
                 MangaBurstBackground()
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 22) {
-                        header
-                        themeGrid
-                        operationFooter
-                    }
-                    .padding(28)
+                VStack(spacing: 0) {
+                    workspace
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    OperationBanner(model: model)
                 }
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .frame(minWidth: 820, minHeight: 580)
+        .frame(minWidth: 960, minHeight: 640)
         .task { await model.refresh() }
+        .onChange(of: model.commandRequest?.nonce) { nonce in
+            consumeCommandRequest(nonce: nonce)
+        }
         .fileImporter(isPresented: $showingImporter, allowedContentTypes: [.codexSkinPackage]) { result in
             handleImportResult(result)
         }
@@ -53,7 +83,20 @@ package struct ContentView: View {
             }
             Button("取消", role: .cancel) { model.cancelPendingImport() }
         } message: {
-            Text("替换会更新主题库中的同名 ID，但不会自动应用。")
+            Text(model.pendingReplacementConfirmationText ?? "替换后不会自动应用。")
+        }
+        .alert("需要重新启动 Codex", isPresented: restartAlertBinding) {
+            Button("重启并应用") {
+                Task { await model.confirmPendingRestartApply() }
+            }
+            Button("取消", role: .cancel) { model.cancelPendingRestartApply() }
+        } message: {
+            Text("当前 Codex 正在运行，但 CDP 未通过验证。继续会重启 Codex 并验证所选主题。")
+        }
+        .alert("无法导入主题", isPresented: localErrorBinding) {
+            Button("好", role: .cancel) { localError = nil }
+        } message: {
+            Text(localError ?? "未知错误")
         }
         .confirmationDialog("恢复 Codex 原版界面？", isPresented: $confirmingRestore, titleVisibility: .visible) {
             Button("恢复并重启 Codex", role: .destructive) {
@@ -65,9 +108,29 @@ package struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var workspace: some View {
+        switch model.selectedSection {
+        case .dashboard:
+            DashboardView(
+                model: model,
+                onOpenLibrary: { model.selectedSection = .library },
+                onRestore: { confirmingRestore = true }
+            )
+        case .library, .recent:
+            ThemeLibraryView(
+                model: model,
+                onImport: { showingImporter = true },
+                onExport: presentExportPanel,
+                onImportURLs: importURLs,
+                searchFocusNonce: commandPresentation.searchFocusNonce
+            )
+        }
+    }
+
     private var sidebar: some View {
         VStack(spacing: 0) {
-            List(ManagerSection.allCases, selection: $selectedSection) { section in
+            List(ManagerSection.allCases, selection: $model.selectedSection) { section in
                 Label(section.title, systemImage: section.symbol)
                     .tag(section)
                     .font(.system(size: 14, weight: .medium))
@@ -78,14 +141,11 @@ package struct ContentView: View {
                 Text("DREAM SKIN ENGINE")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundStyle(.secondary)
-                HStack(spacing: 7) {
-                    Circle()
-                        .fill(engineColor)
-                        .frame(width: 8, height: 8)
-                    Text(engineStatusText)
-                        .font(.caption)
-                        .lineLimit(1)
-                }
+                Label(engineStatusText, systemImage: engineSymbol)
+                    .font(.caption)
+                    .foregroundStyle(engineColor)
+                    .lineLimit(2)
+                    .accessibilityLabel("引擎状态：\(engineStatusText)")
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(16)
@@ -95,92 +155,6 @@ package struct ContentView: View {
         .frame(minWidth: 190)
     }
 
-    private var header: some View {
-        HStack(alignment: .center, spacing: 18) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text("CODEX · SKIN ARSENAL")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .tracking(2.2)
-                    .foregroundStyle(VisualStyle.ice)
-                Text(selectedSection == .recent ? "最近装备" : "主题武库")
-                    .font(.system(size: 34, weight: .bold, design: .serif))
-                Text("切换已经安装的主题，或导入完整的 .codexskin 武装包。")
-                    .font(.callout)
-                    .foregroundStyle(VisualStyle.muted)
-            }
-            Spacer()
-            Button {
-                showingImporter = true
-            } label: {
-                Label("导入主题", systemImage: "square.and.arrow.down.on.square")
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(VisualStyle.ice)
-            .disabled(model.operation.isBusy)
-            .accessibilityLabel("导入新的 Codex 主题包")
-
-            Button(role: .destructive) {
-                confirmingRestore = true
-            } label: {
-                Label("恢复原版", systemImage: "arrow.counterclockwise.circle")
-            }
-            .buttonStyle(.bordered)
-            .disabled(model.operation.isBusy)
-            .accessibilityLabel("恢复 Codex 原版界面并重启")
-        }
-    }
-
-    @ViewBuilder
-    private var themeGrid: some View {
-        let visibleThemes = selectedSection == .recent ? model.recentThemes : model.themes
-        if visibleThemes.isEmpty {
-            VStack(spacing: 12) {
-                Image(systemName: selectedSection == .recent ? "clock.badge.questionmark" : "shield.slash")
-                    .font(.system(size: 40, weight: .light))
-                    .foregroundStyle(VisualStyle.frost)
-                Text(selectedSection == .recent ? "还没有最近使用的主题" : "没有找到已安装主题")
-                    .font(.title3.weight(.semibold))
-                Text("可从右上角导入一个完整的 .codexskin 主题包。")
-                    .foregroundStyle(VisualStyle.muted)
-            }
-            .frame(maxWidth: .infinity, minHeight: 280)
-            .background(VisualStyle.panel.opacity(0.65))
-            .clipShape(WeaponPlateShape())
-        } else {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 270, maximum: 420), spacing: 18)], spacing: 18) {
-                ForEach(visibleThemes) { theme in
-                    ThemeCardView(theme: theme, model: model)
-                }
-            }
-        }
-    }
-
-    private var operationFooter: some View {
-        HStack(spacing: 10) {
-            Image(systemName: operationSymbol)
-                .foregroundStyle(operationColor)
-            Text(localError ?? operationText)
-                .font(.callout)
-                .lineLimit(2)
-            Spacer()
-            if model.operation.isBusy {
-                ProgressView()
-                    .controlSize(.small)
-            }
-            Button {
-                Task { await model.refresh() }
-            } label: {
-                Label("刷新", systemImage: "arrow.clockwise")
-                    .labelStyle(.iconOnly)
-            }
-            .buttonStyle(.plain)
-            .disabled(model.operation.isBusy)
-            .accessibilityLabel("刷新主题库和引擎状态")
-        }
-        .padding(13)
-        .background(.ultraThinMaterial, in: WeaponPlateShape())
-    }
-
     private var duplicateAlertBinding: Binding<Bool> {
         Binding(
             get: { model.pendingReplacementURL != nil },
@@ -188,18 +162,79 @@ package struct ContentView: View {
         )
     }
 
+    private var restartAlertBinding: Binding<Bool> {
+        Binding(
+            get: { model.pendingRestartThemeID != nil },
+            set: { visible in if !visible { model.cancelPendingRestartApply() } }
+        )
+    }
+
+    private var localErrorBinding: Binding<Bool> {
+        Binding(
+            get: { localError != nil },
+            set: { visible in if !visible { localError = nil } }
+        )
+    }
+
     private func handleImportResult(_ result: Result<URL, Error>) {
         switch result {
         case .success(let url):
             localError = nil
-            Task {
-                let scoped = url.startAccessingSecurityScopedResource()
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                await model.importPackage(url)
+            if !importURLs([url]) {
+                localError = "请选择一个有效的 .codexskin 主题包。"
             }
         case .failure(let error):
             localError = String(error.localizedDescription.prefix(300))
         }
+    }
+
+    private func consumeCommandRequest(nonce: UUID?) {
+        guard let nonce,
+              let command = model.consumeCommandRequest(nonce: nonce)
+        else { return }
+        if let section = commandPresentation.reduce(claimed: command, nonce: nonce) {
+            model.selectedSection = section
+        }
+        switch command {
+        case .importTheme:
+            guard !model.operation.isBusy else { return }
+            showingImporter = true
+        case .exportTheme:
+            guard !model.operation.isBusy else { return }
+            presentExportPanel()
+        case .applySelected:
+            guard !model.operation.isBusy, model.selectedTheme != nil else { return }
+            Task { await model.applySelectedTheme() }
+        case .restoreOriginal:
+            guard !model.operation.isBusy else { return }
+            confirmingRestore = true
+        case .refresh:
+            Task { await model.refresh() }
+        case .focusSearch:
+            break
+        }
+    }
+
+    @discardableResult
+    package func importURLs(_ urls: [URL]) -> Bool {
+        guard urls.count == 1,
+              let url = urls.first
+        else { return false }
+        let accepted = model.beginImport(url)
+        if accepted { localError = nil }
+        return accepted
+    }
+
+    @MainActor
+    private func presentExportPanel() {
+        guard let theme = model.selectedTheme else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.codexSkinPackage]
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = "\(ThemeExportName.safeExportName(theme.manifest.name, fallback: theme.manifest.id)).codexskin"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        Task { await model.exportSelectedTheme(to: destination) }
     }
 
     private var engineStatusText: String {
@@ -209,38 +244,14 @@ package struct ContentView: View {
         return "Codex 未运行"
     }
 
+    private var engineSymbol: String {
+        guard let status = model.status else { return "hourglass" }
+        if status.cdpOk && status.injectorAlive { return "checkmark.seal.fill" }
+        return status.codexRunning ? "exclamationmark.triangle.fill" : "power"
+    }
+
     private var engineColor: Color {
-        guard let status = model.status else { return .gray }
-        return status.cdpOk && status.injectorAlive ? VisualStyle.jade : .orange
-    }
-
-    private var operationText: String {
-        switch model.operation {
-        case .idle: "准备就绪"
-        case .validating: "正在验证主题包…"
-        case .switching: "正在装备主题；热切换失败时会自动重启 Codex…"
-        case .importing: "正在安全导入主题包…"
-        case .restoring: "正在恢复原版界面并重启 Codex…"
-        case .succeeded(let message), .failed(let message): message
-        }
-    }
-
-    private var operationSymbol: String {
-        switch model.operation {
-        case .succeeded: "checkmark.seal.fill"
-        case .failed: "exclamationmark.triangle.fill"
-        case .switching: "shield.lefthalf.filled"
-        case .importing, .validating: "square.and.arrow.down"
-        case .restoring: "arrow.counterclockwise.circle.fill"
-        case .idle: "snowflake"
-        }
-    }
-
-    private var operationColor: Color {
-        switch model.operation {
-        case .failed: .red
-        case .succeeded: VisualStyle.jade
-        default: VisualStyle.ice
-        }
+        guard let status = model.status else { return .secondary }
+        return status.cdpOk && status.injectorAlive ? VisualStyle.success : VisualStyle.warning
     }
 }

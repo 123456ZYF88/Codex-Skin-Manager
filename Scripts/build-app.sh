@@ -41,9 +41,11 @@ TEMP_APP="$TEMP_ROOT/Codex Skin Manager.app"
 /bin/chmod 644 "$TEMP_APP/Contents/Info.plist"
 /bin/cp "$PROJECT_ROOT/Resources/AppIcon.icns" "$TEMP_APP/Contents/Resources/AppIcon.icns"
 /bin/chmod 644 "$TEMP_APP/Contents/Resources/AppIcon.icns"
-/bin/cp "$PROJECT_ROOT/EngineExtension/import-theme-pack-macos.sh" \
-  "$TEMP_APP/Contents/Resources/EngineExtension/import-theme-pack-macos.sh"
-/bin/chmod 700 "$TEMP_APP/Contents/Resources/EngineExtension/import-theme-pack-macos.sh"
+for extension in import-theme-pack-macos.sh restart-dream-skin-macos.sh; do
+  /bin/cp "$PROJECT_ROOT/EngineExtension/$extension" \
+    "$TEMP_APP/Contents/Resources/EngineExtension/$extension"
+  /bin/chmod 700 "$TEMP_APP/Contents/Resources/EngineExtension/$extension"
+done
 
 /usr/bin/plutil -lint "$TEMP_APP/Contents/Info.plist" >/dev/null
 /usr/bin/codesign --force --deep --sign - "$TEMP_APP"

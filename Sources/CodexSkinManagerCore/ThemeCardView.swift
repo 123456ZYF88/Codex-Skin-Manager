@@ -4,6 +4,7 @@ import SwiftUI
 package struct ThemeCardView: View {
     package let theme: ThemeRecord
     @ObservedObject package var model: AppModel
+    @FocusState private var isFocused: Bool
 
     package init(theme: ThemeRecord, model: AppModel) {
         self.theme = theme
@@ -11,52 +12,61 @@ package struct ThemeCardView: View {
     }
 
     package var body: some View {
-        VStack(spacing: 0) {
-            preview
-                .aspectRatio(16 / 9, contentMode: .fit)
+        Button(action: { model.selectTheme(theme) }) {
+            VStack(spacing: 0) {
+                preview
+                    .aspectRatio(16 / 9, contentMode: .fit)
 
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(theme.manifest.name)
-                        .font(.system(size: 20, weight: .semibold, design: .serif))
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    if theme.isActive {
-                        Label("已启用", systemImage: "snowflake")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(VisualStyle.frost)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(VisualStyle.ice.opacity(0.16), in: Capsule())
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(theme.manifest.name)
+                            .font(.system(size: 20, weight: .semibold, design: .serif))
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        if theme.isActive {
+                            Label("已启用", systemImage: "snowflake")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(VisualStyle.frost)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(VisualStyle.ice.opacity(0.16), in: Capsule())
+                        }
+                    }
+
+                    HStack {
+                        Label(appearanceLabel, systemImage: "circle.lefthalf.filled")
+                            .font(.caption)
+                            .foregroundStyle(VisualStyle.muted)
+                        Spacer()
+                        Label(
+                            model.selectedThemeID == theme.libraryID ? "已选中" : "查看详情",
+                            systemImage: model.selectedThemeID == theme.libraryID ? "checkmark.circle.fill" : "chevron.right.circle"
+                        )
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(model.selectedThemeID == theme.libraryID ? VisualStyle.ice : VisualStyle.muted)
                     }
                 }
-
-                HStack {
-                    Label(appearanceLabel, systemImage: "circle.lefthalf.filled")
-                        .font(.caption)
-                        .foregroundStyle(VisualStyle.muted)
-                    Spacer()
-                    Button {
-                        Task { await model.apply(theme) }
-                    } label: {
-                        Label(theme.isActive ? "当前主题" : "装备主题", systemImage: theme.isActive ? "checkmark.seal.fill" : "shield.lefthalf.filled")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(theme.isActive ? .gray : VisualStyle.ice)
-                    .disabled(theme.isActive || model.operation.isBusy)
-                    .accessibilityLabel(theme.isActive ? "当前已启用 \(theme.manifest.name)" : "应用主题 \(theme.manifest.name)")
-                }
+                .padding(14)
             }
-            .padding(14)
         }
-        .background(VisualStyle.panel)
+        .buttonStyle(.plain)
+        .focused($isFocused)
+        .background(isEmphasized ? VisualStyle.panelStrong : VisualStyle.panelQuiet)
         .clipShape(WeaponPlateShape())
         .overlay {
             WeaponPlateShape()
-                .stroke(theme.isActive ? VisualStyle.ice : .white.opacity(0.16), lineWidth: theme.isActive ? 2 : 1)
+                .stroke(
+                    isEmphasized || isFocused ? VisualStyle.selection : .white.opacity(0.12),
+                    lineWidth: isEmphasized || isFocused ? 2 : 1
+                )
         }
-        .shadow(color: theme.isActive ? VisualStyle.ice.opacity(0.24) : .black.opacity(0.35), radius: 16, y: 8)
+        .shadow(
+            color: isEmphasized ? VisualStyle.selection.opacity(0.16) : .clear,
+            radius: isEmphasized ? 10 : 0
+        )
         .accessibilityElement(children: .contain)
+        .accessibilityLabel("选择主题 \(theme.manifest.name)")
+        .accessibilityAddTraits(model.selectedThemeID == theme.libraryID ? [.isButton, .isSelected] : .isButton)
     }
 
     @ViewBuilder
@@ -71,6 +81,7 @@ package struct ThemeCardView: View {
                     LinearGradient(colors: [.clear, VisualStyle.abyss.opacity(0.8)], startPoint: .top, endPoint: .bottom)
                         .frame(height: 70)
                 }
+                .accessibilityLabel("主题预览 \(theme.manifest.name)")
         } else {
             ZStack {
                 LinearGradient(colors: [VisualStyle.deepBlue, VisualStyle.abyss], startPoint: .topLeading, endPoint: .bottomTrailing)
@@ -78,7 +89,12 @@ package struct ThemeCardView: View {
                     .font(.system(size: 38, weight: .light))
                     .foregroundStyle(VisualStyle.frost.opacity(0.75))
             }
+            .accessibilityLabel("主题预览 \(theme.manifest.name) 不可用")
         }
+    }
+
+    private var isEmphasized: Bool {
+        theme.isActive || model.selectedThemeID == theme.libraryID
     }
 
     private var appearanceLabel: String {
