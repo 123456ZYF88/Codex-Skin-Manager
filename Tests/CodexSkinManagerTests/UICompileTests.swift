@@ -8,6 +8,7 @@ enum UICompileTests {
         try sidebarUsesConcreteSelectionTags()
         try mainWindowUsesDedicatedWorkspaceViews()
         try themeCardsUseKeyboardFocusableSelectionButtons()
+        try importAndExportUseSafeNativeWorkflows()
 
         await MainActor.run {
             let theme = makeThemeRecord(id: "ui-theme", name: "UI Theme")
@@ -20,10 +21,10 @@ enum UICompileTests {
             _ = ContentView(model: model)
             _ = ThemeCardView(theme: theme, model: model)
             _ = DashboardView(model: model, onOpenLibrary: {}, onRestore: {})
-            _ = ThemeLibraryView(model: model, onImport: {}, onExport: {})
+            _ = ThemeLibraryView(model: model, onImport: {}, onExport: {}, onImportURLs: { _ in false })
             _ = ThemeDetailView(theme: theme, model: model, onExport: {})
             _ = ThemeToolbar(model: model, onImport: {}, onExport: {})
-            _ = OperationBanner(model: model, onRetry: {})
+            _ = OperationBanner(model: model)
             _ = MenuBarContentView(model: model)
         }
         print("PASS: UICompileTests")
@@ -145,6 +146,22 @@ enum UICompileTests {
         try expect(source.contains(".buttonStyle(.plain)"), "Theme card selection buttons must preserve card styling")
         try expect(!source.contains(".onTapGesture"), "Theme card selection must not rely on pointer-only tap gestures")
         try expect(!source.contains("model.apply"), "Theme cards must select without applying themes")
+    }
+
+    private static func importAndExportUseSafeNativeWorkflows() throws {
+        let contentSource = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ContentView.swift"),
+            encoding: .utf8
+        )
+        let librarySource = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ThemeLibraryView.swift"),
+            encoding: .utf8
+        )
+
+        try expect(librarySource.contains(".dropDestination(for: URL.self)"), "theme library must accept theme packages by drag and drop")
+        try expect(contentSource.contains("importURLs(_ urls: [URL]) -> Bool"), "file picker and drops must share one URL import handler")
+        try expect(contentSource.contains("NSSavePanel"), "export must use the native save panel")
+        try expect(contentSource.contains("allowedFileTypes = [\"codexskin\"]"), "save panel must restrict exports to .codexskin")
     }
 
     private static func themeExtensionInstallationIsExplicitAndAtomic() throws {

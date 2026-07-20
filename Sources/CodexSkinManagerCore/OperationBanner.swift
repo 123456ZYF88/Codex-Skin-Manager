@@ -1,20 +1,11 @@
 import AppKit
 import SwiftUI
 
-package extension AppModel {
-    var retryAvailable: Bool {
-        // A failed operation is not enough information to retry safely. Task 6 will provide a typed retry intent.
-        false
-    }
-}
-
 package struct OperationBanner: View {
     @ObservedObject package var model: AppModel
-    package let onRetry: () -> Void
 
-    package init(model: AppModel, onRetry: @escaping () -> Void) {
+    package init(model: AppModel) {
         self.model = model
-        self.onRetry = onRetry
     }
 
     package var body: some View {
@@ -31,7 +22,9 @@ package struct OperationBanner: View {
                     .accessibilityLabel(presentation.text)
             }
             if model.retryAvailable {
-                Button("重试", action: onRetry)
+                Button("重试") {
+                    Task { await model.retryLastAction() }
+                }
                     .buttonStyle(.bordered)
                     .accessibilityLabel("重试上一个失败的操作")
             }

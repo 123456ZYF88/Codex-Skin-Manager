@@ -72,6 +72,8 @@ actor FakeEngine: EngineControlling {
     private(set) var restartCount = 0
     var duplicateOnNormalImport = false
     var switchFailure: ManagerError?
+    var importFailure: ManagerError?
+    var restoreFailure: ManagerError?
     var statusFailure: ManagerError?
     var validationFailure: ManagerError?
     var blockSwitch = false
@@ -119,6 +121,7 @@ actor FakeEngine: EngineControlling {
 
     func importTheme(packageURL: URL, replace: Bool) async throws -> ThemeImportResult {
         imports.append((packageURL, replace))
+        if let importFailure { throw importFailure }
         if duplicateOnNormalImport && !replace {
             throw ManagerError.themeAlreadyExists(id: "duplicate")
         }
@@ -138,6 +141,7 @@ actor FakeEngine: EngineControlling {
 
     func restoreOriginal() async throws {
         restoreCount += 1
+        if let restoreFailure { throw restoreFailure }
     }
 
     func pauseTheme() async throws {
@@ -150,6 +154,8 @@ actor FakeEngine: EngineControlling {
 
     func setDuplicateOnNormalImport(_ value: Bool) { duplicateOnNormalImport = value }
     func setSwitchFailure(_ error: ManagerError?) { switchFailure = error }
+    func setImportFailure(_ error: ManagerError?) { importFailure = error }
+    func setRestoreFailure(_ error: ManagerError?) { restoreFailure = error }
     func setStatusFailure(_ error: ManagerError?) { statusFailure = error }
     func setValidationFailure(_ error: ManagerError?) { validationFailure = error }
     func setBlockSwitch(_ value: Bool) { blockSwitch = value }
@@ -199,25 +205,80 @@ enum AppModelTests {
         try await exportsSelectedThemeThenValidatesPackage()
         try await failedExportValidationPreservesPriorURL()
         try await failuresBecomeActionableState()
-        try await failedOperationDoesNotOfferUntypedRetry()
+        try await failedApplyRetriesTheSameThemeAndClearsIntentOnSuccess()
+        try await failedPauseRetriesTheTypedLifecycleAction()
+        try await failedRestoreStoresRetryIntent()
+        try await failedImportDoesNotRetryStaleSecurityScopedURL()
         print("PASS: AppModelTests")
     }
 
     @MainActor
-    private static func failedOperationDoesNotOfferUntypedRetry() async throws {
-        let theme = makeThemeRecord(id: "retry-gate", name: "Retry Gate")
-        let engine = FakeEngine()
+    private static func failedApplyRetriesTheSameThemeAndClearsIntentOnSuccess() async throws {
+        let theme = makeThemeRecord(id: "retry-target", name: "Retry Target")
+        let catalog = FakeThemeCatalog(themes: [theme])
+        let engine = FakeEngine(onSwitch: { id in catalog.setActiveLibraryID(id) })
         await engine.setSwitchFailure(.engine("切换失败"))
         let model = AppModel(
-            catalog: FakeThemeCatalog(themes: [theme]),
+            catalog: catalog,
             engine: engine,
             defaults: makeDefaults()
         )
 
+        await model.refresh()
         await model.apply(theme)
 
         try expect(model.operation == .failed("切换失败"), "fixture must enter the failed state")
-        try expect(!model.retryAvailable, "Task 5 must not offer an untyped retry for a failed operation")
+        try expect(model.retryAvailable, "failed apply must retain a typed retry intent")
+        await engine.setSwitchFailure(nil)
+        await model.retryLastAction()
+
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.switchedIDs == ["retry-target", "retry-target"], "retry must switch the original library ID")
+        try expect(!model.retryAvailable, "verified success must clear the retry intent")
+    }
+
+    @MainActor
+    private static func failedPauseRetriesTheTypedLifecycleAction() async throws {
+        let engine = FakeEngine()
+        await engine.setStatusFailure(.engine("暂停后状态读取失败"))
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
+
+        await model.pauseTheme()
+
+        try expect(model.retryAvailable, "failed pause must retain a typed pause retry intent")
+        await engine.setStatusFailure(nil)
+        await model.retryLastAction()
+
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.pauseCount == 2, "retry must execute pause again")
+        try expect(model.operation == .succeeded("主题已暂停"), "successful pause retry must complete")
+    }
+
+    @MainActor
+    private static func failedRestoreStoresRetryIntent() async throws {
+        let engine = FakeEngine()
+        await engine.setRestoreFailure(.engine("恢复失败"))
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
+
+        await model.restoreOriginal()
+
+        try expect(model.operation == .failed("恢复失败"), "restore failure must stay visible")
+        try expect(model.retryAvailable, "restore failure must retain a typed restore retry intent")
+    }
+
+    @MainActor
+    private static func failedImportDoesNotRetryStaleSecurityScopedURL() async throws {
+        let engine = FakeEngine()
+        await engine.setImportFailure(.engine("主题包验证失败"))
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
+
+        await model.importPackage(URL(fileURLWithPath: "/tmp/stale-scope.codexskin"))
+
+        try expect(model.operation == .failed("主题包验证失败"), "import validation failure must stay visible")
+        try expect(!model.retryAvailable, "import must not retain a security-scoped URL for retry")
+        await model.retryLastAction()
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.importReplaceFlags == [false], "retry must never reuse a stale import URL")
     }
 
     @MainActor
@@ -273,6 +334,12 @@ enum AppModelTests {
             model.operation == .failed("导出后验证失败，请检查主题包。"),
             "validation failure must remain actionable"
         )
+        try expect(model.retryAvailable, "failed export must retain a typed export retry intent")
+        await engine.setValidationFailure(nil)
+        await model.retryLastAction()
+        let retriedExports = await exporter.snapshot()
+        try expect(retriedExports.map(\.destination) == [prior, rejected, rejected], "retry must export to the original destination")
+        try expect(!model.retryAvailable, "verified export retry must clear its intent")
     }
 
     @MainActor

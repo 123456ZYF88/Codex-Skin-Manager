@@ -27,7 +27,7 @@ package struct ContentView: View {
                 VStack(spacing: 0) {
                     workspace
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    OperationBanner(model: model, onRetry: {})
+                    OperationBanner(model: model)
                 }
             }
         }
@@ -81,7 +81,8 @@ package struct ContentView: View {
             ThemeLibraryView(
                 model: model,
                 onImport: { showingImporter = true },
-                onExport: presentExportPanel
+                onExport: presentExportPanel,
+                onImportURLs: importURLs
             )
         }
     }
@@ -138,26 +139,59 @@ package struct ContentView: View {
         switch result {
         case .success(let url):
             localError = nil
-            Task {
-                let scoped = url.startAccessingSecurityScopedResource()
-                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                await model.importPackage(url)
+            if !importURLs([url]) {
+                localError = "请选择一个有效的 .codexskin 主题包。"
             }
         case .failure(let error):
             localError = String(error.localizedDescription.prefix(300))
         }
     }
 
+    @discardableResult
+    package func importURLs(_ urls: [URL]) -> Bool {
+        guard urls.count == 1,
+              let url = urls.first,
+              url.isFileURL,
+              url.pathExtension.localizedCaseInsensitiveCompare("codexskin") == .orderedSame,
+              (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        else { return false }
+
+        localError = nil
+        Task {
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer {
+                if scoped {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+            await model.importPackage(url)
+        }
+        return true
+    }
+
+    @MainActor
     private func presentExportPanel() {
         guard let theme = model.selectedTheme else { return }
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.codexSkinPackage]
+        panel.allowedFileTypes = ["codexskin"]
         panel.canCreateDirectories = true
-        panel.nameFieldStringValue = "\(theme.libraryID).codexskin"
-        panel.begin { response in
-            guard response == .OK, let destination = panel.url else { return }
-            Task { await model.exportSelectedTheme(to: destination) }
+        panel.isExtensionHidden = false
+        panel.nameFieldStringValue = "\(safeExportName(theme.manifest.name, fallback: theme.manifest.id)).codexskin"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        Task { await model.exportSelectedTheme(to: destination) }
+    }
+
+    private func safeExportName(_ name: String, fallback: String) -> String {
+        var result = ""
+        for character in name {
+            if character.isLetter || character.isNumber || character == "-" || character == "_" {
+                result.append(character)
+            } else if result.last != "-" {
+                result.append("-")
+            }
         }
+        let trimmed = result.trimmingCharacters(in: CharacterSet(charactersIn: "-_"))
+        return trimmed.isEmpty ? fallback : trimmed
     }
 
     private var engineStatusText: String {

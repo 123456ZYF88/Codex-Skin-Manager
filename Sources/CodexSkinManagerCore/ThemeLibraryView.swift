@@ -4,11 +4,19 @@ package struct ThemeLibraryView: View {
     @ObservedObject package var model: AppModel
     package let onImport: () -> Void
     package let onExport: () -> Void
+    package let onImportURLs: ([URL]) -> Bool
+    @State private var isImportTargeted = false
 
-    package init(model: AppModel, onImport: @escaping () -> Void, onExport: @escaping () -> Void) {
+    package init(
+        model: AppModel,
+        onImport: @escaping () -> Void,
+        onExport: @escaping () -> Void,
+        onImportURLs: @escaping ([URL]) -> Bool
+    ) {
         self.model = model
         self.onImport = onImport
         self.onExport = onExport
+        self.onImportURLs = onImportURLs
     }
 
     package var body: some View {
@@ -34,6 +42,23 @@ package struct ThemeLibraryView: View {
             }
         }
         .padding(24)
+        .overlay {
+            if isImportTargeted {
+                WeaponPlateShape()
+                    .stroke(VisualStyle.ice, style: StrokeStyle(lineWidth: 2, dash: [8, 5]))
+                    .background(VisualStyle.ice.opacity(0.10))
+                    .overlay {
+                        Text("释放以导入主题包")
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(VisualStyle.frost)
+                    }
+                    .padding(16)
+                    .allowsHitTesting(false)
+            }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            onImportURLs(urls)
+        } isTargeted: { isImportTargeted = $0 }
     }
 
     private var themeList: some View {
@@ -89,16 +114,41 @@ package struct ThemeLibraryView: View {
 
     private var emptyState: some View {
         VStack(spacing: 10) {
-            Image(systemName: model.selectedSection == .recent ? "clock.badge.questionmark" : "shield.slash")
+            Image(systemName: emptyStateSymbol)
                 .font(.system(size: 38, weight: .light))
                 .foregroundStyle(VisualStyle.frost)
-            Text(model.selectedSection == .recent ? "还没有最近使用的主题" : "没有匹配的主题")
+            Text(emptyStateTitle)
                 .font(.title3.weight(.semibold))
-            Text("调整搜索或筛选条件，也可以导入 .codexskin 主题包。")
+            Text(emptyStateMessage)
                 .foregroundStyle(VisualStyle.muted)
+            if model.selectedSection == .library && model.themes.isEmpty {
+                Button("导入主题", action: onImport)
+                    .buttonStyle(.borderedProminent)
+            } else if model.selectedSection == .library {
+                Button("清除筛选") {
+                    model.searchText = ""
+                    model.themeFilter = .all
+                }
+                .buttonStyle(.bordered)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 240)
         .accessibilityElement(children: .combine)
+    }
+
+    private var emptyStateSymbol: String {
+        if model.selectedSection == .recent { return "clock.badge.questionmark" }
+        return model.themes.isEmpty ? "shield.slash" : "line.3.horizontal.decrease.circle"
+    }
+
+    private var emptyStateTitle: String {
+        if model.selectedSection == .recent { return "还没有最近使用的主题" }
+        return model.themes.isEmpty ? "没有找到已安装主题" : "当前筛选没有匹配主题"
+    }
+
+    private var emptyStateMessage: String {
+        if model.selectedSection == .recent { return "应用主题后会出现在这里" }
+        return model.themes.isEmpty ? "导入 .codexskin 主题包以开始使用。" : "调整搜索或筛选条件后再试。"
     }
 
     private var emptyDetail: some View {

@@ -23,6 +23,14 @@ package enum ManagerOperation: Equatable, Sendable {
 
 @MainActor
 package final class AppModel: ObservableObject {
+    private enum RetryIntent: Equatable, Sendable {
+        case apply(String)
+        case pause
+        case restart
+        case restore
+        case export(String, URL)
+    }
+
     @Published package private(set) var themes: [ThemeRecord] = []
     @Published package private(set) var status: EngineStatus?
     @Published package private(set) var operation: ManagerOperation = .idle
@@ -41,6 +49,7 @@ package final class AppModel: ObservableObject {
     private let exporter: any ThemePackageExporting
     private let defaults: UserDefaults
     private let recentThemeKey = "recentThemeLibraryIDs"
+    private var retryIntent: RetryIntent?
 
     package init(
         catalog: any ThemeCatalogReading,
@@ -90,8 +99,30 @@ package final class AppModel: ObservableObject {
         return themes.first { $0.libraryID == selectedThemeID }
     }
 
+    package var retryAvailable: Bool {
+        retryIntent != nil && !operation.isBusy
+    }
+
     package func selectTheme(_ theme: ThemeRecord?) {
         selectedThemeID = theme?.libraryID
+    }
+
+    package func retryLastAction() async {
+        guard !operation.isBusy, let retryIntent else { return }
+        switch retryIntent {
+        case .apply(let id):
+            guard let theme = themes.first(where: { $0.libraryID == id }) else { return }
+            await performApply(theme)
+        case .pause:
+            await pauseTheme()
+        case .restart:
+            await restartTheme()
+        case .restore:
+            await restoreOriginal()
+        case .export(let id, let destination):
+            guard selectedThemeID == id else { return }
+            await exportSelectedTheme(to: destination)
+        }
     }
 
     package func refresh() async {
@@ -130,6 +161,7 @@ package final class AppModel: ObservableObject {
     }
 
     private func performApply(_ theme: ThemeRecord) async {
+        retryIntent = .apply(theme.libraryID)
         operation = .switching
         do {
             try await engine.switchTheme(libraryID: theme.libraryID)
@@ -142,6 +174,7 @@ package final class AppModel: ObservableObject {
             }
             recordRecent(theme.libraryID)
             selectedThemeID = theme.libraryID
+            retryIntent = nil
             operation = .succeeded("已应用 \(theme.manifest.name)")
         } catch {
             operation = .failed(message(for: error))
@@ -157,12 +190,14 @@ package final class AppModel: ObservableObject {
 
     package func exportSelectedTheme(to destination: URL) async {
         guard !operation.isBusy, let theme = selectedTheme else { return }
+        retryIntent = .export(theme.libraryID, destination)
         operation = .exporting
         do {
             let output = try await exporter.export(theme: theme, to: destination)
             // Publish success only after the engine has independently accepted the archive.
             try await engine.validateThemePackage(packageURL: output)
             lastExportURL = output
+            retryIntent = nil
             operation = .succeeded("已导出 \(theme.manifest.name)")
         } catch {
             operation = .failed(message(for: error))
@@ -183,10 +218,12 @@ package final class AppModel: ObservableObject {
 
     package func restoreOriginal() async {
         guard !operation.isBusy else { return }
+        retryIntent = .restore
         operation = .restoring
         do {
             try await engine.restoreOriginal()
             try await reloadState()
+            retryIntent = nil
             operation = .succeeded("已恢复 Codex 原版界面")
         } catch {
             operation = .failed(message(for: error))
@@ -195,10 +232,12 @@ package final class AppModel: ObservableObject {
 
     package func pauseTheme() async {
         guard !operation.isBusy else { return }
+        retryIntent = .pause
         operation = .pausing
         do {
             try await engine.pauseTheme()
             try await reloadState(requiringStatus: true)
+            retryIntent = nil
             operation = .succeeded("主题已暂停")
         } catch {
             operation = .failed(message(for: error))
@@ -207,10 +246,12 @@ package final class AppModel: ObservableObject {
 
     package func restartTheme() async {
         guard !operation.isBusy else { return }
+        retryIntent = .restart
         operation = .restarting
         do {
             try await engine.restartTheme()
             try await reloadState(requiringStatus: true)
+            retryIntent = nil
             operation = .succeeded("Codex 已重新启动并应用主题")
         } catch {
             operation = .failed(message(for: error))
