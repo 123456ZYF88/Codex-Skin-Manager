@@ -6,41 +6,6 @@ package extension UTType {
     static let codexSkinPackage = UTType(exportedAs: "dev.codexskin.package", conformingTo: .zip)
 }
 
-package enum ThemePackageDeferredStore {
-    package static func isRegularPackage(_ url: URL) -> Bool {
-        guard url.isFileURL,
-              url.pathExtension.localizedCaseInsensitiveCompare("codexskin") == .orderedSame,
-              let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
-              values.isRegularFile == true,
-              values.isSymbolicLink != true
-        else { return false }
-        return true
-    }
-
-    package static func stage(_ source: URL, root: URL = defaultRoot()) throws -> URL {
-        guard isRegularPackage(source) else {
-            throw ManagerError.invalidResponse("导入包必须是普通 .codexskin 文件。")
-        }
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(
-            at: root,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        let destination = root.appendingPathComponent("\(UUID().uuidString).codexskin")
-        try fileManager.copyItem(at: source, to: destination)
-        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
-        return destination
-    }
-
-    private static func defaultRoot() -> URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support", isDirectory: true)
-            .appendingPathComponent("CodexDreamSkinStudio", isDirectory: true)
-            .appendingPathComponent("PendingThemeImports", isDirectory: true)
-    }
-}
-
 package enum ThemeExportName {
     package static func safeExportName(_ name: String, fallback: String) -> String {
         let primary = sanitize(name)
@@ -206,36 +171,11 @@ package struct ContentView: View {
     @discardableResult
     package func importURLs(_ urls: [URL]) -> Bool {
         guard urls.count == 1,
-              let url = urls.first,
-              url.isFileURL,
-              url.pathExtension.localizedCaseInsensitiveCompare("codexskin") == .orderedSame
+              let url = urls.first
         else { return false }
-
-        localError = nil
-        let scoped = url.startAccessingSecurityScopedResource()
-        guard ThemePackageDeferredStore.isRegularPackage(url) else {
-            if scoped {
-                url.stopAccessingSecurityScopedResource()
-            }
-            return false
-        }
-        Task {
-            defer {
-                if scoped {
-                    url.stopAccessingSecurityScopedResource()
-                }
-            }
-            let requiresReplacement = await model.importPackage(url)
-            guard requiresReplacement else { return }
-            do {
-                // The private copy is made before the caller's scope ends so replacement never reuses its URL.
-                let staged = try ThemePackageDeferredStore.stage(url)
-                model.storePendingReplacement(staged)
-            } catch {
-                localError = String(error.localizedDescription.prefix(300))
-            }
-        }
-        return true
+        let accepted = model.beginImport(url)
+        if accepted { localError = nil }
+        return accepted
     }
 
     @MainActor

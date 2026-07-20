@@ -82,21 +82,8 @@ package struct MenuBarContentView: View {
             switch result {
             case .success(let url):
                 localError = nil
-                Task {
-                    let scoped = url.startAccessingSecurityScopedResource()
-                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    guard ThemePackageDeferredStore.isRegularPackage(url) else {
-                        localError = "请选择一个有效的 .codexskin 主题包。"
-                        return
-                    }
-                    let requiresReplacement = await model.importPackage(url)
-                    guard requiresReplacement else { return }
-                    do {
-                        let staged = try ThemePackageDeferredStore.stage(url)
-                        model.storePendingReplacement(staged)
-                    } catch {
-                        localError = String(error.localizedDescription.prefix(300))
-                    }
+                if !model.beginImport(url) {
+                    localError = "请选择一个有效的 .codexskin 主题包，或等待当前操作完成。"
                 }
             case .failure(let error):
                 localError = String(error.localizedDescription.prefix(240))

@@ -49,18 +49,22 @@ package final class AppModel: ObservableObject {
     private let exporter: any ThemePackageExporting
     private let defaults: UserDefaults
     private let recentThemeKey = "recentThemeLibraryIDs"
+    private let deferredImportRoot: URL
     private var retryIntent: RetryIntent?
+    private var importGeneration = 0
 
     package init(
         catalog: any ThemeCatalogReading,
         engine: any EngineControlling,
         exporter: any ThemePackageExporting = ThemePackageExporter(),
-        defaults: UserDefaults
+        defaults: UserDefaults,
+        deferredImportRoot: URL = ThemePackageDeferredStore.defaultRoot()
     ) {
         self.catalog = catalog
         self.engine = engine
         self.exporter = exporter
         self.defaults = defaults
+        self.deferredImportRoot = deferredImportRoot
         recentThemeIDs = Array((defaults.stringArray(forKey: recentThemeKey) ?? []).prefix(8))
     }
 
@@ -192,13 +196,29 @@ package final class AppModel: ObservableObject {
         }
     }
 
-    package func importPackage(_ packageURL: URL) async -> Bool {
+    package func beginImport(_ packageURL: URL) -> Bool {
         guard !operation.isBusy else { return false }
+        let scoped = packageURL.startAccessingSecurityScopedResource()
+        guard ThemePackageDeferredStore.isRegularPackage(packageURL) else {
+            if scoped { packageURL.stopAccessingSecurityScopedResource() }
+            return false
+        }
         // Imports cannot be retried safely after the caller's security scope ends.
         retryIntent = nil
         discardPendingReplacement()
+        importGeneration &+= 1
+        let generation = importGeneration
         operation = .validating
-        return await performImport(packageURL, replace: false)
+        Task { [weak self] in
+            await self?.completeImport(packageURL, generation: generation, scoped: scoped)
+        }
+        return true
+    }
+
+    package func importPackage(_ packageURL: URL) async -> Bool {
+        guard beginImport(packageURL) else { return false }
+        while operation.isBusy { await Task.yield() }
+        return pendingReplacementURL != nil
     }
 
     package func exportSelectedTheme(to destination: URL) async {
@@ -231,12 +251,6 @@ package final class AppModel: ObservableObject {
     package func cancelPendingImport() {
         guard !operation.isBusy else { return }
         discardPendingReplacement()
-    }
-
-    package func storePendingReplacement(_ stagedPackageURL: URL) {
-        guard !operation.isBusy else { return }
-        discardPendingReplacement()
-        pendingReplacementURL = stagedPackageURL
     }
 
     package func restoreOriginal() async {
@@ -278,6 +292,36 @@ package final class AppModel: ObservableObject {
             operation = .succeeded("Codex 已重新启动并应用主题")
         } catch {
             operation = .failed(message(for: error))
+        }
+    }
+
+    private func completeImport(_ packageURL: URL, generation: Int, scoped: Bool) async {
+        defer { if scoped { packageURL.stopAccessingSecurityScopedResource() } }
+        guard generation == importGeneration else { return }
+        operation = .importing
+        do {
+            let result = try await engine.importTheme(packageURL: packageURL, replace: false)
+            guard generation == importGeneration else { return }
+            try await reloadState()
+            guard generation == importGeneration else { return }
+            operation = .succeeded("已导入 \(result.themeName)")
+        } catch ManagerError.themeAlreadyExists {
+            guard generation == importGeneration else { return }
+            do {
+                let staged = try ThemePackageDeferredStore.stage(packageURL, root: deferredImportRoot)
+                guard generation == importGeneration else {
+                    try? FileManager.default.removeItem(at: staged)
+                    return
+                }
+                pendingReplacementURL = staged
+                operation = .idle
+            } catch {
+                operation = .failed(message(for: error))
+            }
+        } catch {
+            if generation == importGeneration {
+                operation = .failed(message(for: error))
+            }
         }
     }
 

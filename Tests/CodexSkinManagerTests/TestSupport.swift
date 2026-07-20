@@ -9,6 +9,11 @@ func expect(_ condition: @autoclosure () -> Bool, _ message: String) throws {
     guard condition() else { throw TestFailure(description: message) }
 }
 
+func unwrap<T>(_ value: T?, _ message: String) throws -> T {
+    guard let value else { throw TestFailure(description: message) }
+    return value
+}
+
 func makeTemporaryDirectory(prefix: String) throws -> URL {
     let url = FileManager.default.temporaryDirectory
         .appendingPathComponent("\(prefix)-\(UUID().uuidString)", isDirectory: true)

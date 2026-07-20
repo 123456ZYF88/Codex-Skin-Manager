@@ -108,7 +108,6 @@ enum UICompileTests {
             contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ThemeLibraryView.swift"),
             encoding: .utf8
         )
-
         for typeName in [
             "DashboardView",
             "ThemeLibraryView",
@@ -157,15 +156,20 @@ enum UICompileTests {
             contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ThemeLibraryView.swift"),
             encoding: .utf8
         )
+        let modelSource = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/AppModel.swift"),
+            encoding: .utf8
+        )
 
         try expect(librarySource.contains(".dropDestination(for: URL.self)"), "theme library must accept theme packages by drag and drop")
         try expect(contentSource.contains("importURLs(_ urls: [URL]) -> Bool"), "file picker and drops must share one URL import handler")
         try expect(
-            contentSource.range(of: "startAccessingSecurityScopedResource()")!.lowerBound
-                < contentSource.range(of: "ThemePackageDeferredStore.isRegularPackage(url)")!.lowerBound,
+            modelSource.range(of: "startAccessingSecurityScopedResource()")!.lowerBound
+                < modelSource.range(of: "ThemePackageDeferredStore.isRegularPackage(packageURL)")!.lowerBound,
             "the import security scope must begin before regular-file metadata is read"
         )
-        try expect(contentSource.contains("ThemePackageDeferredStore.stage(url)"), "duplicate imports must be staged before their security scope ends")
+        try expect(contentSource.contains("model.beginImport(url)"), "ContentView must delegate import reservation to the shared coordinator")
+        try expect(modelSource.contains("ThemePackageDeferredStore.stage(packageURL"), "duplicate imports must be staged before their security scope ends")
         try expect(contentSource.contains("NSSavePanel"), "export must use the native save panel")
         try expect(contentSource.contains("allowedFileTypes = [\"codexskin\"]"), "save panel must restrict exports to .codexskin")
     }
