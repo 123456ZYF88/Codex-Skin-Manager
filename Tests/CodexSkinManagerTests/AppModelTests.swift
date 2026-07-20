@@ -199,7 +199,25 @@ enum AppModelTests {
         try await exportsSelectedThemeThenValidatesPackage()
         try await failedExportValidationPreservesPriorURL()
         try await failuresBecomeActionableState()
+        try await failedOperationDoesNotOfferUntypedRetry()
         print("PASS: AppModelTests")
+    }
+
+    @MainActor
+    private static func failedOperationDoesNotOfferUntypedRetry() async throws {
+        let theme = makeThemeRecord(id: "retry-gate", name: "Retry Gate")
+        let engine = FakeEngine()
+        await engine.setSwitchFailure(.engine("切换失败"))
+        let model = AppModel(
+            catalog: FakeThemeCatalog(themes: [theme]),
+            engine: engine,
+            defaults: makeDefaults()
+        )
+
+        await model.apply(theme)
+
+        try expect(model.operation == .failed("切换失败"), "fixture must enter the failed state")
+        try expect(!model.retryAvailable, "Task 5 must not offer an untyped retry for a failed operation")
     }
 
     @MainActor

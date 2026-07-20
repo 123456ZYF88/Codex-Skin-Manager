@@ -36,15 +36,12 @@ package struct ThemeCardView: View {
                         .font(.caption)
                         .foregroundStyle(VisualStyle.muted)
                     Spacer()
-                    Button {
-                        Task { await model.apply(theme) }
-                    } label: {
-                        Label(theme.isActive ? "当前主题" : "装备主题", systemImage: theme.isActive ? "checkmark.seal.fill" : "shield.lefthalf.filled")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(theme.isActive ? .gray : VisualStyle.ice)
-                    .disabled(theme.isActive || model.operation.isBusy)
-                    .accessibilityLabel(theme.isActive ? "当前已启用 \(theme.manifest.name)" : "应用主题 \(theme.manifest.name)")
+                    Label(
+                        model.selectedThemeID == theme.libraryID ? "已选中" : "查看详情",
+                        systemImage: model.selectedThemeID == theme.libraryID ? "checkmark.circle.fill" : "chevron.right.circle"
+                    )
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(model.selectedThemeID == theme.libraryID ? VisualStyle.ice : VisualStyle.muted)
                 }
             }
             .padding(14)
@@ -53,10 +50,22 @@ package struct ThemeCardView: View {
         .clipShape(WeaponPlateShape())
         .overlay {
             WeaponPlateShape()
-                .stroke(theme.isActive ? VisualStyle.ice : .white.opacity(0.16), lineWidth: theme.isActive ? 2 : 1)
+                .stroke(
+                    model.selectedThemeID == theme.libraryID ? VisualStyle.ice : .white.opacity(0.16),
+                    lineWidth: model.selectedThemeID == theme.libraryID ? 2 : 1
+                )
         }
-        .shadow(color: theme.isActive ? VisualStyle.ice.opacity(0.24) : .black.opacity(0.35), radius: 16, y: 8)
+        .shadow(
+            color: model.selectedThemeID == theme.libraryID ? VisualStyle.ice.opacity(0.2) : .black.opacity(0.3),
+            radius: 14,
+            y: 7
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { model.selectTheme(theme) }
         .accessibilityElement(children: .contain)
+        .accessibilityLabel("选择主题 \(theme.manifest.name)")
+        .accessibilityAddTraits(model.selectedThemeID == theme.libraryID ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction { model.selectTheme(theme) }
     }
 
     @ViewBuilder

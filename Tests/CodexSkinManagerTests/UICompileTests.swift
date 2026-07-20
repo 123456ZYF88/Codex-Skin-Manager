@@ -6,6 +6,7 @@ enum UICompileTests {
         try appBundleDeclaresIcon()
         try themeExtensionInstallationIsExplicitAndAtomic()
         try sidebarUsesConcreteSelectionTags()
+        try mainWindowUsesDedicatedWorkspaceViews()
 
         await MainActor.run {
             let theme = makeThemeRecord(id: "ui-theme", name: "UI Theme")
@@ -17,6 +18,11 @@ enum UICompileTests {
 
             _ = ContentView(model: model)
             _ = ThemeCardView(theme: theme, model: model)
+            _ = DashboardView(model: model, onOpenLibrary: {}, onRestore: {})
+            _ = ThemeLibraryView(model: model, onImport: {}, onExport: {})
+            _ = ThemeDetailView(theme: theme, model: model, onExport: {})
+            _ = ThemeToolbar(model: model, onImport: {}, onExport: {})
+            _ = OperationBanner(model: model, onRetry: {})
             _ = MenuBarContentView(model: model)
         }
         print("PASS: UICompileTests")
@@ -78,8 +84,8 @@ enum UICompileTests {
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
 
         try expect(
-            source.contains("@State private var selectedSection: ManagerSection = .library"),
-            "Sidebar selection must always have a concrete section"
+            source.contains("selection: $model.selectedSection"),
+            "Sidebar selection must bind the concrete section owned by AppModel"
         )
         try expect(
             source.contains(".tag(section)"),
@@ -88,6 +94,31 @@ enum UICompileTests {
         try expect(
             !source.contains(".tag(Optional(section))"),
             "Optional sidebar tags prevent NavigationSplitView rows from selecting"
+        )
+    }
+
+    private static func mainWindowUsesDedicatedWorkspaceViews() throws {
+        let source = try String(
+            contentsOf: projectRoot().appendingPathComponent("Sources/CodexSkinManagerCore/ContentView.swift"),
+            encoding: .utf8
+        )
+
+        for typeName in [
+            "DashboardView",
+            "ThemeLibraryView",
+            "ThemeDetailView",
+            "ThemeToolbar",
+            "OperationBanner",
+        ] {
+            try expect(source.contains(typeName), "ContentView must compose \(typeName)")
+        }
+        try expect(
+            !source.contains("private var themeGrid"),
+            "ContentView must delegate theme layout to ThemeLibraryView"
+        )
+        try expect(
+            !source.contains("enum ManagerSection"),
+            "ContentView must use the shared ManagerSection model"
         )
     }
 
