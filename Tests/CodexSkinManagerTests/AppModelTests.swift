@@ -60,6 +60,7 @@ actor FakeEngine: EngineControlling {
     private(set) var restartCount = 0
     var duplicateOnNormalImport = false
     var switchFailure: ManagerError?
+    var statusFailure: ManagerError?
     var blockSwitch = false
     private var engineStatus = EngineStatus(
         session: "live",
@@ -79,7 +80,8 @@ actor FakeEngine: EngineControlling {
     }
 
     func status() async throws -> EngineStatus {
-        engineStatus
+        if let statusFailure { throw statusFailure }
+        return engineStatus
     }
 
     func switchTheme(libraryID: String) async throws {
@@ -130,6 +132,7 @@ actor FakeEngine: EngineControlling {
 
     func setDuplicateOnNormalImport(_ value: Bool) { duplicateOnNormalImport = value }
     func setSwitchFailure(_ error: ManagerError?) { switchFailure = error }
+    func setStatusFailure(_ error: ManagerError?) { statusFailure = error }
     func setBlockSwitch(_ value: Bool) { blockSwitch = value }
     func setStatus(_ status: EngineStatus) { engineStatus = status }
 
@@ -170,6 +173,8 @@ enum AppModelTests {
         try await restoreCallsOnlyRestoreCommand()
         try await pauseRefreshesStatus()
         try await restartRefreshesStatus()
+        try await pauseFailsWhenStatusRefreshFails()
+        try await restartFailsWhenStatusRefreshFails()
         try await busySwitchBlocksPauseAndRestart()
         try await failuresBecomeActionableState()
         print("PASS: AppModelTests")
@@ -399,6 +404,32 @@ enum AppModelTests {
         try expect(snapshot.restartCount == 1, "restart must call the lifecycle command exactly once")
         try expect(model.status == expectedStatus, "restart must refresh engine status")
         try expect(model.operation == .succeeded("Codex 已重新启动并应用主题"), "restart success message mismatch")
+    }
+
+    @MainActor
+    private static func pauseFailsWhenStatusRefreshFails() async throws {
+        let engine = FakeEngine()
+        await engine.setStatusFailure(.engine("暂停后状态读取失败"))
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
+
+        await model.pauseTheme()
+
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.pauseCount == 1, "pause must execute before the status refresh")
+        try expect(model.operation == .failed("暂停后状态读取失败"), "pause must fail when status refresh fails")
+    }
+
+    @MainActor
+    private static func restartFailsWhenStatusRefreshFails() async throws {
+        let engine = FakeEngine()
+        await engine.setStatusFailure(.engine("重启后状态读取失败"))
+        let model = AppModel(catalog: FakeThemeCatalog(themes: []), engine: engine, defaults: makeDefaults())
+
+        await model.restartTheme()
+
+        let snapshot = await engine.snapshot()
+        try expect(snapshot.restartCount == 1, "restart must execute before the status refresh")
+        try expect(model.operation == .failed("重启后状态读取失败"), "restart must fail when status refresh fails")
     }
 
     @MainActor

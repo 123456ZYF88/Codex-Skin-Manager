@@ -4,6 +4,7 @@ import Foundation
 enum UICompileTests {
     static func run() async throws {
         try appBundleDeclaresIcon()
+        try themeExtensionInstallationIsExplicitAndAtomic()
         try sidebarUsesConcreteSelectionTags()
 
         await MainActor.run {
@@ -88,5 +89,69 @@ enum UICompileTests {
             !source.contains(".tag(Optional(section))"),
             "Optional sidebar tags prevent NavigationSplitView rows from selecting"
         )
+    }
+
+    private static func themeExtensionInstallationIsExplicitAndAtomic() throws {
+        let projectRoot = projectRoot()
+        let restartScript = try String(
+            contentsOf: projectRoot.appendingPathComponent("EngineExtension/restart-dream-skin-macos.sh"),
+            encoding: .utf8
+        )
+        let buildScript = try String(
+            contentsOf: projectRoot.appendingPathComponent("Scripts/build-app.sh"),
+            encoding: .utf8
+        )
+        let installScript = try String(
+            contentsOf: projectRoot.appendingPathComponent("Scripts/install-app.sh"),
+            encoding: .utf8
+        )
+
+        try expect(
+            restartScript.contains(". \"$SCRIPT_DIR/common-macos.sh\"")
+                && restartScript.contains("stop_codex true")
+                && restartScript.contains("exec \"$SCRIPT_DIR/start-dream-skin-macos.sh\" --restart-existing"),
+            "restart wrapper must use only trusted lifecycle helpers"
+        )
+        let sourcedHelpers = restartScript
+            .split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix(". ") || $0.hasPrefix("source ") }
+        try expect(
+            sourcedHelpers == [". \"$SCRIPT_DIR/common-macos.sh\""],
+            "restart wrapper must source only common-macos.sh"
+        )
+        try expect(
+            !restartScript.contains("pgrep") && !restartScript.contains("pkill") && !restartScript.contains("/bin/kill"),
+            "restart wrapper must delegate process discovery and termination to common-macos.sh"
+        )
+        try expect(
+            buildScript.contains("for extension in import-theme-pack-macos.sh restart-dream-skin-macos.sh; do")
+                && buildScript.contains("/bin/cp \"$PROJECT_ROOT/EngineExtension/$extension\""),
+            "build must explicitly copy only the trusted extension filenames"
+        )
+
+        let engineInstall = installScript.components(separatedBy: "ENGINE_ROOT=").last ?? ""
+        try expect(
+            engineInstall.contains("for extension in import-theme-pack-macos.sh restart-dream-skin-macos.sh; do")
+                && engineInstall.contains("EXTENSION_TEMP=\"$ENGINE_SCRIPTS/.$extension.$$\"")
+                && engineInstall.contains("/usr/bin/install -m 700 \"$EXTENSION_SOURCE\" \"$EXTENSION_TEMP\"")
+                && engineInstall.contains("/bin/chmod 700 \"$EXTENSION_TEMP\"")
+                && engineInstall.contains("/bin/mv -f \"$EXTENSION_TEMP\" \"$ENGINE_SCRIPTS/$extension\""),
+            "install must use a 0700 temporary file and atomic per-extension replacement"
+        )
+        try expect(
+            !buildScript.contains("EngineExtension/*.sh")
+                && !engineInstall.contains("*")
+                && !engineInstall.contains("/bin/rm")
+                && !engineInstall.contains("rm -rf"),
+            "extension installation must not use globs or delete unrelated engine scripts"
+        )
+    }
+
+    private static func projectRoot() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
     }
 }

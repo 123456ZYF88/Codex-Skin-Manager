@@ -178,7 +178,7 @@ package final class AppModel: ObservableObject {
         operation = .pausing
         do {
             try await engine.pauseTheme()
-            try await reloadState()
+            try await reloadState(requiringStatus: true)
             operation = .succeeded("主题已暂停")
         } catch {
             operation = .failed(message(for: error))
@@ -190,7 +190,7 @@ package final class AppModel: ObservableObject {
         operation = .restarting
         do {
             try await engine.restartTheme()
-            try await reloadState()
+            try await reloadState(requiringStatus: true)
             operation = .succeeded("Codex 已重新启动并应用主题")
         } catch {
             operation = .failed(message(for: error))
@@ -211,9 +211,13 @@ package final class AppModel: ObservableObject {
         }
     }
 
-    private func reloadState() async throws {
+    private func reloadState(requiringStatus: Bool = false) async throws {
         themes = try catalog.loadThemes()
-        status = try? await engine.status()
+        if requiringStatus {
+            status = try await engine.status()
+        } else {
+            status = try? await engine.status()
+        }
         pruneRecentThemes()
         let available = Set(themes.map(\.libraryID))
         if let selectedThemeID, available.contains(selectedThemeID) {

@@ -57,6 +57,7 @@ if [ -f "$ENGINE_SCRIPTS/common-macos.sh" ] \
     EXTENSION_SOURCE="$PROJECT_ROOT/EngineExtension/$extension"
     EXTENSION_TEMP="$ENGINE_SCRIPTS/.$extension.$$"
     /usr/bin/install -m 700 "$EXTENSION_SOURCE" "$EXTENSION_TEMP"
+    /bin/chmod 700 "$EXTENSION_TEMP"
     /bin/mv -f "$EXTENSION_TEMP" "$ENGINE_SCRIPTS/$extension"
     /usr/bin/printf 'Installed engine extension: %s\n' "$ENGINE_SCRIPTS/$extension"
   done
